@@ -1,0 +1,142 @@
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { Rating } from './rating.entity';
+import { Ticket } from '../tickets/ticket.entity';
+import { User } from '../users/user.entity';
+import { ClientRatingDto } from './dto/client-rating.dto';
+import { StaffRatingDto } from './dto/staff-rating.dto';
+
+const DISCIPLINE_WINDOW = 20; // останні N оцінок для rolling average
+
+@Injectable()
+export class RatingsService {
+  constructor(
+    @InjectRepository(Rating)
+    private readonly repo: Repository<Rating>,
+    @InjectRepository(Ticket)
+    private readonly ticketRepo: Repository<Ticket>,
+    @InjectRepository(User)
+    private readonly userRepo: Repository<User>,
+  ) {}
+
+  // ─── Citizen оцінює спеціаліста ──────────────────────────────────────────
+
+  async rateByClient(citizenId: string, dto: ClientRatingDto) {
+    const ticket = await this.ticketRepo.findOneBy({ id: dto.ticket_id });
+    if (!ticket) throw new NotFoundException('Талон не знайдено');
+    if (ticket.client_id !== citizenId) throw new ForbiddenException('Це не ваш талон');
+    if (ticket.status !== 'completed') throw new BadRequestException('Оцінити можна лише завершений талон');
+    if (ticket.rating_by_client_id) throw new BadRequestException('Ви вже оцінили цей талон');
+    if (!ticket.staff_id) throw new BadRequestException('Спеціаліст не призначений до талону');
+
+    const rating = this.repo.create({
+      ticket_id: ticket.id,
+      staff_id: ticket.staff_id,
+      citizen_id: citizenId,
+      type: 'client',
+      score: dto.score,
+      topic: dto.topic ?? null,
+      comment: dto.comment ?? null,
+    });
+    const saved = await this.repo.save(rating);
+
+    // Оновлюємо joined-поля талону
+    await this.ticketRepo.update(ticket.id, {
+      rating_by_client_id: saved.id,
+      client_rating: dto.score,
+      client_comment: dto.comment ?? null,
+      client_rating_topic: dto.topic ?? null,
+    });
+
+    return saved;
+  }
+
+  // ─── Staff оцінює громадянина ─────────────────────────────────────────────
+
+  async rateByStaff(staffId: string, dto: StaffRatingDto) {
+    const ticket = await this.ticketRepo.findOneBy({ id: dto.ticket_id });
+    if (!ticket) throw new NotFoundException('Талон не знайдено');
+    if (ticket.staff_id !== staffId) throw new ForbiddenException('Це не ваш талон');
+    if (ticket.status !== 'completed') throw new BadRequestException('Оцінити можна лише завершений талон');
+    if (ticket.rating_by_staff_id) throw new BadRequestException('Ви вже оцінили цей талон');
+    if (!ticket.client_id) throw new BadRequestException('Анонімний талон — оцінка недоступна');
+
+    const rating = this.repo.create({
+      ticket_id: ticket.id,
+      staff_id: staffId,
+      citizen_id: ticket.client_id,
+      type: 'staff',
+      score: dto.score,
+      topic: dto.topic ?? null,
+      comment: dto.comment ?? null,
+    });
+    const saved = await this.repo.save(rating);
+
+    // Оновлюємо joined-поля талону
+    await this.ticketRepo.update(ticket.id, {
+      rating_by_staff_id: saved.id,
+      staff_rating: dto.score,
+      staff_rating_topic: dto.topic ?? null,
+      staff_rating_comment: dto.comment ?? null,
+    });
+
+    // Оновлюємо discipline_score громадянина (ковзне середнє × 20)
+    await this.updateDisciplineScore(ticket.client_id);
+
+    return saved;
+  }
+
+  // ─── Агрегат по спеціалісту ───────────────────────────────────────────────
+
+  async getPerformance(staffId: string) {
+    const [avgResult, ticketsResult] = await Promise.all([
+      this.repo
+        .createQueryBuilder('r')
+        .select('AVG(r.score)', 'average_score')
+        .addSelect('COUNT(*)', 'ratings_count')
+        .where('r.staff_id = :staffId', { staffId })
+        .andWhere('r.type = :type', { type: 'client' })
+        .getRawOne<{ average_score: string; ratings_count: string }>(),
+
+      this.ticketRepo
+        .createQueryBuilder('t')
+        .select('COUNT(*)', 'tickets_served')
+        .addSelect('AVG(EXTRACT(EPOCH FROM (t.completed_at - t.serving_started_at)) * 1000)', 'avg_ms')
+        .where('t.staff_id = :staffId', { staffId })
+        .andWhere('t.status = :status', { status: 'completed' })
+        .andWhere('t.serving_started_at IS NOT NULL')
+        .getRawOne<{ tickets_served: string; avg_ms: string }>(),
+    ]);
+
+    return {
+      staff_id: staffId,
+      average_score: parseFloat(avgResult?.average_score ?? '0') || 0,
+      ratings_count: parseInt(avgResult?.ratings_count ?? '0'),
+      tickets_served: parseInt(ticketsResult?.tickets_served ?? '0'),
+      average_serving_time_ms: Math.round(parseFloat(ticketsResult?.avg_ms ?? '0') || 0),
+    };
+  }
+
+  // ─── Хелпер: оновити discipline_score ────────────────────────────────────
+
+  private async updateDisciplineScore(citizenId: string) {
+    const lastRatings = await this.repo.find({
+      where: { citizen_id: citizenId, type: 'staff' },
+      order: { created_at: 'DESC' },
+      take: DISCIPLINE_WINDOW,
+    });
+
+    if (!lastRatings.length) return;
+
+    const avg = lastRatings.reduce((sum, r) => sum + r.score, 0) / lastRatings.length;
+    const discipline_score = Math.round(avg * 20); // 1–5 → 20–100
+
+    await this.userRepo.update(citizenId, { discipline_score });
+  }
+}

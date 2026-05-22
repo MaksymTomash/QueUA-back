@@ -1,0 +1,19 @@
+# compiled output
+/dist
+/node_modules
+
+# env
+.env
+.env.local
+
+# Logs
+logs
+*.log
+
+# OS
+.DS_Store
+
+# IDE
+.idea
+.vscode/*
+!.vscode/extensions.json
