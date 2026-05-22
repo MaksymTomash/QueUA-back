@@ -37,6 +37,9 @@ export class Department {
   @Column({ type: 'varchar', nullable: true })
   leader_id: string | null;
 
+  @Column({ type: 'float', default: 0 })
+  rating: number;
+
   @CreateDateColumn()
   created_at: Date;
 }

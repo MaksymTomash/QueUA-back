@@ -11,6 +11,7 @@ import { Ticket } from './ticket.entity';
 import { Window } from '../windows/window.entity';
 import { QueueService } from '../services/service.entity';
 import { Department } from '../departments/department.entity';
+import { User } from '../users/user.entity';
 import { AuditsService } from '../audits/audits.service';
 import { QueueCountersService } from '../queue-counters/queue-counters.service';
 import { BookTicketDto } from './dto/book-ticket.dto';
@@ -19,6 +20,7 @@ import { CompleteTicketDto } from './dto/complete-ticket.dto';
 import { QueryTicketsDto } from './dto/query-tickets.dto';
 import { QueueGateway } from '../queue/queue.gateway';
 import { DepartmentServicesService } from '../department-services/department-services.service';
+import { DisciplineEventsService } from '../discipline-events/discipline-events.service';
 import { QueueCounter } from '../queue-counters/queue-counter.entity';
 
 @Injectable()
@@ -32,10 +34,13 @@ export class TicketsService {
     private readonly serviceRepo: Repository<QueueService>,
     @InjectRepository(Department)
     private readonly deptRepo: Repository<Department>,
+    @InjectRepository(User)
+    private readonly userRepo: Repository<User>,
     private readonly auditsService: AuditsService,
     private readonly queueCounters: QueueCountersService,
     private readonly queueGateway: QueueGateway,
     private readonly deptServicesService: DepartmentServicesService,
+    private readonly disciplineEvents: DisciplineEventsService,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -73,13 +78,24 @@ export class TicketsService {
     const hasActive = await this.repo
       .createQueryBuilder('t')
       .where('t.client_id = :clientId', { clientId })
+      .andWhere('t.department_id = :deptId', { deptId: dto.department_id })
+      .andWhere('t.service_id = :svcId', { svcId: dto.service_id })
       .andWhere('t.status IN (:...statuses)', { statuses: ['waiting', 'called', 'serving'] })
       .getExists();
 
-    if (hasActive) throw new BadRequestException('У вас вже є активний талон');
+    if (hasActive) throw new BadRequestException('Ви вже стоїте в цій черзі');
 
     const svc = await this.serviceRepo.findOneBy({ id: dto.service_id });
     if (!svc) throw new NotFoundException('Послугу не знайдено');
+
+    if (svc.min_discipline_score > 0) {
+      const user = await this.userRepo.findOneBy({ id: clientId });
+      if (user && user.discipline_score < svc.min_discipline_score) {
+        throw new ForbiddenException(
+          `Для цієї послуги потрібен рейтинг дисципліни ≥ ${svc.min_discipline_score}. Ваш: ${user.discipline_score}`,
+        );
+      }
+    }
 
     const serviceInDept = await this.deptServicesService.isActiveInDepartment(
       dto.department_id,
@@ -376,6 +392,16 @@ export class TicketsService {
 
     const saved = await this.repo.save(ticket);
     this.queueGateway.emitTicketUpdated(saved.department_id, saved);
+
+    if (saved.client_id) {
+      this.disciplineEvents.log({
+        user_id: saved.client_id,
+        event_type: 'completed_ticket',
+        impact: 2,
+        ticket_id: saved.id,
+      });
+    }
+
     return saved;
   }
 
@@ -391,6 +417,16 @@ export class TicketsService {
     await this.auditsService.record({ ticket_id: ticket.id, staff_id: staffId, action: 'missed' });
     const saved = await this.repo.save(ticket);
     this.queueGateway.emitTicketUpdated(saved.department_id, saved);
+
+    if (saved.client_id) {
+      this.disciplineEvents.log({
+        user_id: saved.client_id,
+        event_type: 'missed_ticket',
+        impact: -5,
+        ticket_id: saved.id,
+      });
+    }
+
     return saved;
   }
 

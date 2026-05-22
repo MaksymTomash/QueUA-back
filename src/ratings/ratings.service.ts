@@ -9,10 +9,12 @@ import { Repository } from 'typeorm';
 import { Rating } from './rating.entity';
 import { Ticket } from '../tickets/ticket.entity';
 import { User } from '../users/user.entity';
+import { Department } from '../departments/department.entity';
 import { ClientRatingDto } from './dto/client-rating.dto';
 import { StaffRatingDto } from './dto/staff-rating.dto';
+import { DisciplineEventsService } from '../discipline-events/discipline-events.service';
 
-const DISCIPLINE_WINDOW = 20; // останні N оцінок для rolling average
+const DISCIPLINE_WINDOW = 20;
 
 @Injectable()
 export class RatingsService {
@@ -23,6 +25,9 @@ export class RatingsService {
     private readonly ticketRepo: Repository<Ticket>,
     @InjectRepository(User)
     private readonly userRepo: Repository<User>,
+    @InjectRepository(Department)
+    private readonly deptRepo: Repository<Department>,
+    private readonly disciplineEvents: DisciplineEventsService,
   ) {}
 
   // ─── Citizen оцінює спеціаліста ──────────────────────────────────────────
@@ -46,13 +51,14 @@ export class RatingsService {
     });
     const saved = await this.repo.save(rating);
 
-    // Оновлюємо joined-поля талону
     await this.ticketRepo.update(ticket.id, {
       rating_by_client_id: saved.id,
       client_rating: dto.score,
       client_comment: dto.comment ?? null,
       client_rating_topic: dto.topic ?? null,
     });
+
+    await this.updateDepartmentRating(ticket.department_id);
 
     return saved;
   }
@@ -78,7 +84,6 @@ export class RatingsService {
     });
     const saved = await this.repo.save(rating);
 
-    // Оновлюємо joined-поля талону
     await this.ticketRepo.update(ticket.id, {
       rating_by_staff_id: saved.id,
       staff_rating: dto.score,
@@ -86,8 +91,17 @@ export class RatingsService {
       staff_rating_comment: dto.comment ?? null,
     });
 
-    // Оновлюємо discipline_score громадянина (ковзне середнє × 20)
     await this.updateDisciplineScore(ticket.client_id);
+
+    // impact: 1→-5, 2→-2.5, 3→0, 4→2.5, 5→5
+    const impact = (dto.score - 3) * 2.5;
+    this.disciplineEvents.log({
+      user_id: ticket.client_id,
+      event_type: 'rating_received',
+      impact,
+      ticket_id: ticket.id,
+      rating_id: saved.id,
+    });
 
     return saved;
   }
@@ -123,7 +137,7 @@ export class RatingsService {
     };
   }
 
-  // ─── Хелпер: оновити discipline_score ────────────────────────────────────
+  // ─── Хелпери ─────────────────────────────────────────────────────────────
 
   private async updateDisciplineScore(citizenId: string) {
     const lastRatings = await this.repo.find({
@@ -138,5 +152,18 @@ export class RatingsService {
     const discipline_score = Math.round(avg * 20); // 1–5 → 20–100
 
     await this.userRepo.update(citizenId, { discipline_score });
+  }
+
+  private async updateDepartmentRating(departmentId: string) {
+    const result = await this.repo
+      .createQueryBuilder('r')
+      .innerJoin(Ticket, 't', 't.id = r.ticket_id')
+      .select('AVG(r.score)', 'avg')
+      .where('t.department_id = :departmentId', { departmentId })
+      .andWhere('r.type = :type', { type: 'client' })
+      .getRawOne<{ avg: string }>();
+
+    const rating = parseFloat(result?.avg ?? '0') || 0;
+    await this.deptRepo.update(departmentId, { rating });
   }
 }

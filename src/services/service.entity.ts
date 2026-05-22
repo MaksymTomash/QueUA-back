@@ -22,4 +22,7 @@ export class QueueService {
 
   @Column({ length: 3 })
   ticket_prefix: string;
+
+  @Column({ type: 'float', default: 0 })
+  min_discipline_score: number;
 }

@@ -16,6 +16,8 @@ import { RatingsModule } from './ratings/ratings.module';
 import { ReportsModule } from './reports/reports.module';
 import { QueueModule } from './queue/queue.module';
 import { DepartmentServicesModule } from './department-services/department-services.module';
+import { StaffAssignmentsModule } from './staff-assignments/staff-assignments.module';
+import { DisciplineEventsModule } from './discipline-events/discipline-events.module';
 
 @Module({
   imports: [
@@ -40,6 +42,8 @@ import { DepartmentServicesModule } from './department-services/department-servi
     ReportsModule,
     QueueModule,
     DepartmentServicesModule,
+    StaffAssignmentsModule,
+    DisciplineEventsModule,
   ],
 })
 export class AppModule {}

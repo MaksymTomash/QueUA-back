@@ -13,6 +13,7 @@ import { TicketsService } from '../tickets/tickets.service';
 import { CreateWindowDto } from './dto/create-window.dto';
 import { QueryWindowsDto } from './dto/query-windows.dto';
 import { QueueGateway } from '../queue/queue.gateway';
+import { StaffAssignmentsService } from '../staff-assignments/staff-assignments.service';
 
 @Injectable()
 export class WindowsService {
@@ -22,6 +23,7 @@ export class WindowsService {
     @Inject(forwardRef(() => TicketsService))
     private readonly ticketsService: TicketsService,
     private readonly queueGateway: QueueGateway,
+    private readonly staffAssignments: StaffAssignmentsService,
   ) {}
 
   async findAll(query: QueryWindowsDto) {
@@ -58,6 +60,11 @@ export class WindowsService {
     if (!win) throw new NotFoundException('Вікно не знайдено');
     if (win.staff_id && win.staff_id !== staffId)
       throw new BadRequestException('Вікно вже зайняте іншим спеціалістом');
+
+    const assigned = await this.staffAssignments.isAssigned(win.department_id, staffId);
+    if (!assigned)
+      throw new ForbiddenException('Ви не призначені до цього відділення');
+
     win.staff_id = staffId;
     const saved = await this.repo.save(win);
     const result = await this.withWaitingCount(saved);

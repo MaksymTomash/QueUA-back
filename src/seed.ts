@@ -15,6 +15,8 @@ import { QueueCounter } from './queue-counters/queue-counter.entity';
 import { Rating } from './ratings/rating.entity';
 import { Verification } from './verifications/verification.entity';
 import { DepartmentService as DeptService } from './department-services/department-service.entity';
+import { StaffAssignment } from './staff-assignments/staff-assignment.entity';
+import { DisciplineEvent } from './discipline-events/discipline-event.entity';
 
 const ds = new DataSource({
   type: 'postgres',
@@ -23,7 +25,7 @@ const ds = new DataSource({
   username: process.env.DB_USER ?? 'queua',
   password: process.env.DB_PASSWORD ?? 'queua_secret',
   database: process.env.DB_NAME ?? 'queua_db',
-  entities: [User, Department, QueueService, Window, RefreshToken, Ticket, TicketAudit, QueueCounter, Rating, Verification, DeptService],
+  entities: [User, Department, QueueService, Window, RefreshToken, Ticket, TicketAudit, QueueCounter, Rating, Verification, DeptService, StaffAssignment, DisciplineEvent],
   synchronize: true,
   logging: false,
 });
@@ -34,8 +36,8 @@ async function seed() {
 
   // ─── Очищення ────────────────────────────────────────────────────────────────
   await ds.query(`TRUNCATE TABLE
-    ticket_audits, ratings, tickets, queue_counters,
-    verifications, refresh_tokens, windows, department_services, users, services, departments
+    discipline_events, ticket_audits, ratings, tickets, queue_counters,
+    verifications, refresh_tokens, windows, staff_assignments, department_services, users, services, departments
     RESTART IDENTITY CASCADE`);
   console.log('Cleaned tables');
 
@@ -291,6 +293,19 @@ async function seed() {
     { department_id: deptPech.id, service_id: svcResidence.id, is_active: true },
   ]);
   console.log('Department services linked:', 7);
+
+  // ─── Призначення персоналу ────────────────────────────────────────────────────
+  const staffAssignRepo = ds.getRepository(StaffAssignment);
+  await staffAssignRepo.save([
+    // Шевченківський: Іванова — паспорт, Петренко — закордонний
+    { department_id: deptShev.id, service_id: svcPassport.id,  staff_id: ivanova.id },
+    { department_id: deptShev.id, service_id: svcForeign.id,   staff_id: petrenko.id },
+    // Печерський: Коваленко — соціальна, Мельник — ФОП, Бондар — кадастр
+    { department_id: deptPech.id, service_id: svcSocial.id,    staff_id: kovalenko.id },
+    { department_id: deptPech.id, service_id: svcFop.id,       staff_id: melnyk.id },
+    { department_id: deptPech.id, service_id: svcLand.id,      staff_id: bondar.id },
+  ]);
+  console.log('Staff assignments created:', 5);
 
   // ─── Підсумок ─────────────────────────────────────────────────────────────────
   console.log('\n=== Seed completed ===');

@@ -21,6 +21,8 @@ import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { DepartmentServicesService } from '../department-services/department-services.service';
 import { AddDepartmentServiceDto } from '../department-services/dto/add-department-service.dto';
+import { StaffAssignmentsService } from '../staff-assignments/staff-assignments.service';
+import { AssignStaffDto } from '../staff-assignments/dto/assign-staff.dto';
 
 @ApiTags('Departments')
 @Controller('departments')
@@ -28,6 +30,7 @@ export class DepartmentsController {
   constructor(
     private readonly departmentsService: DepartmentsService,
     private readonly deptServicesService: DepartmentServicesService,
+    private readonly staffAssignments: StaffAssignmentsService,
   ) {}
 
   @ApiOperation({ summary: 'Список відділень (публічний)' })
@@ -97,5 +100,36 @@ export class DepartmentsController {
   @HttpCode(HttpStatus.NO_CONTENT)
   removeService(@Param('id') id: string, @Param('serviceId') serviceId: string) {
     return this.deptServicesService.remove(id, serviceId);
+  }
+
+  // ─── Персонал відділення ──────────────────────────────────────────────────
+
+  @ApiOperation({ summary: 'Персонал відділення (admin, staff)' })
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin', 'staff')
+  @Get(':id/staff')
+  getDepartmentStaff(@Param('id') id: string) {
+    return this.staffAssignments.findByDepartment(id);
+  }
+
+  @ApiOperation({ summary: 'Призначити спеціаліста до відділення (admin)' })
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  @Post(':id/staff')
+  @HttpCode(HttpStatus.CREATED)
+  assignStaff(@Param('id') id: string, @Body() dto: AssignStaffDto) {
+    return this.staffAssignments.assign(id, dto);
+  }
+
+  @ApiOperation({ summary: 'Зняти спеціаліста з відділення (admin)' })
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  @Delete(':id/staff/:staffId')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  removeStaff(@Param('id') id: string, @Param('staffId') staffId: string) {
+    return this.staffAssignments.remove(id, staffId);
   }
 }

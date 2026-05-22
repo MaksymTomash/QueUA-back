@@ -5,9 +5,11 @@ import { RatingsService } from './ratings.service';
 import { Rating } from './rating.entity';
 import { Ticket } from '../tickets/ticket.entity';
 import { User } from '../users/user.entity';
+import { Department } from '../departments/department.entity';
+import { DisciplineEventsModule } from '../discipline-events/discipline-events.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Rating, Ticket, User])],
+  imports: [TypeOrmModule.forFeature([Rating, Ticket, User, Department]), DisciplineEventsModule],
   controllers: [RatingsController],
   providers: [RatingsService],
 })
