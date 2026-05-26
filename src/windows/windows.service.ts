@@ -32,6 +32,8 @@ export class WindowsService {
       qb.andWhere('w.department_id = :dep', { dep: query.department_id });
     if (query.date)
       qb.andWhere('w.date = :date', { date: query.date });
+    if (query.service_id)
+      qb.andWhere('w.service_id = :svc', { svc: query.service_id });
 
     const windows = await qb.getMany();
     return Promise.all(windows.map((w) => this.withWaitingCount(w)));

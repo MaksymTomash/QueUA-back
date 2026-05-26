@@ -11,4 +11,9 @@ export class QueryWindowsDto {
   @IsOptional()
   @IsDateString()
   date?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  service_id?: string;
 }
