@@ -61,11 +61,12 @@ export class WindowsService {
     if (win.staff_id && win.staff_id !== staffId)
       throw new BadRequestException('Вікно вже зайняте іншим спеціалістом');
 
-    const assigned = await this.staffAssignments.isAssigned(win.department_id, staffId);
+    const assigned = await this.staffAssignments.isAssigned(win.department_id, staffId, win.service_id);
     if (!assigned)
-      throw new ForbiddenException('Ви не призначені до цього відділення');
+      throw new ForbiddenException('Ви не призначені до цієї послуги у цьому відділенні');
 
     win.staff_id = staffId;
+    win.status = 'open';
     const saved = await this.repo.save(win);
     const result = await this.withWaitingCount(saved);
     this.queueGateway.emitWindowUpdated(saved.department_id, result);

@@ -8,6 +8,7 @@ import { Repository } from 'typeorm';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
+import { randomUUID } from 'crypto';
 import { User } from '../users/user.entity';
 import { RefreshToken } from './refresh-token.entity';
 import { RegisterDto } from './dto/register.dto';
@@ -62,10 +63,7 @@ export class AuthService {
       throw new UnauthorizedException('Недійсний refresh token');
     }
 
-    const stored = await this.refreshTokenRepo.findOne({
-      where: { user_id: payload.sub },
-      relations: { user: true },
-    });
+    const stored = await this.refreshTokenRepo.findOneBy({ user_id: payload.sub });
 
     if (!stored || stored.expires_at < new Date()) {
       throw new UnauthorizedException('Refresh token не знайдено або закінчився');
@@ -74,9 +72,12 @@ export class AuthService {
     const valid = await bcrypt.compare(rawToken, stored.token_hash);
     if (!valid) throw new UnauthorizedException('Недійсний refresh token');
 
+    const user = await this.userRepo.findOneBy({ id: payload.sub });
+    if (!user) throw new UnauthorizedException('Користувача не знайдено');
+
     await this.refreshTokenRepo.remove(stored);
 
-    return this.issueTokens(stored.user);
+    return this.issueTokens(user);
   }
 
   async logout(userId: string) {
@@ -86,10 +87,10 @@ export class AuthService {
   private async issueTokens(user: User) {
     const payload = { sub: user.id, email: user.email, role: user.role };
 
-    const access_token = this.jwtService.sign(payload, {
-      secret: this.config.get<string>('jwt.accessSecret'),
-      expiresIn: 3600,
-    });
+    const access_token = this.jwtService.sign(
+      { ...payload, jti: randomUUID() },
+      { secret: this.config.get<string>('jwt.accessSecret'), expiresIn: 3600 },
+    );
 
     const refresh_token = this.jwtService.sign(
       { sub: user.id },

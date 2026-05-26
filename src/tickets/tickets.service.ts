@@ -64,7 +64,13 @@ export class TicketsService {
     for (let h = hours.openHour; h < hours.closeHour; h++) {
       const time = `${String(h).padStart(2, '0')}:00`;
       const booked = await this.repo.count({
-        where: { department_id: departmentId, service_id: serviceId, scheduled_date: date, time_slot: time },
+        where: [
+          { department_id: departmentId, service_id: serviceId, scheduled_date: date, time_slot: time, status: 'waiting' },
+          { department_id: departmentId, service_id: serviceId, scheduled_date: date, time_slot: time, status: 'called' },
+          { department_id: departmentId, service_id: serviceId, scheduled_date: date, time_slot: time, status: 'serving' },
+          { department_id: departmentId, service_id: serviceId, scheduled_date: date, time_slot: time, status: 'completed' },
+          { department_id: departmentId, service_id: serviceId, scheduled_date: date, time_slot: time, status: 'missed' },
+        ],
       });
       slots.push({ time, capacity, booked, available: Math.max(0, capacity - booked) });
     }
@@ -114,9 +120,6 @@ export class TicketsService {
     const hours = this.parseWorkingHours(dept, scheduledDate);
     if (!hours) throw new BadRequestException(`${dept.name} не працює у цей день`);
 
-    // Визначаємо слот
-    const timeSlot = this.resolveTimeSlot(dto.time_slot, scheduledDate, today, hours, dept.name);
-
     // Для сьогодні — перевіряємо відкриті вікна
     if (scheduledDate === today) {
       const hasOpenWindow = await this.windowRepo
@@ -129,8 +132,22 @@ export class TicketsService {
       if (!hasOpenWindow) throw new NotFoundException('Немає активних вікон для цієї послуги сьогодні');
     }
 
-    // Розраховуємо номер слоту
     const capacity = await this.calcSlotCapacity(dto.department_id, dto.service_id, svc);
+
+    // Визначаємо слот; для живої черги (сьогодні, без явного слоту) — перший вільний
+    let timeSlot = this.resolveTimeSlot(dto.time_slot, scheduledDate, today, hours, dept.name);
+
+    if (!dto.time_slot && scheduledDate === today) {
+      const startHour = parseInt(timeSlot.split(':')[0]);
+      let found = false;
+      for (let h = startHour; h < hours.closeHour; h++) {
+        const slot = `${String(h).padStart(2, '0')}:00`;
+        const taken = await this.countActiveInSlot(dto.department_id, dto.service_id, scheduledDate, slot);
+        if (taken < capacity) { timeSlot = slot; found = true; break; }
+      }
+      if (!found) throw new BadRequestException(`На сьогодні всі слоти заповнені. Спробуйте завтра.`);
+    }
+
     const slotHour = parseInt(timeSlot.split(':')[0]);
     const slotIndex = slotHour - hours.openHour;
     const slotStartNumber = slotIndex * capacity + 1;
@@ -152,12 +169,13 @@ export class TicketsService {
       }
 
       const countInSlot = await manager.count(Ticket, {
-        where: {
-          department_id: dto.department_id,
-          service_id: dto.service_id,
-          scheduled_date: scheduledDate,
-          time_slot: timeSlot,
-        },
+        where: [
+          { department_id: dto.department_id, service_id: dto.service_id, scheduled_date: scheduledDate, time_slot: timeSlot, status: 'waiting' },
+          { department_id: dto.department_id, service_id: dto.service_id, scheduled_date: scheduledDate, time_slot: timeSlot, status: 'called' },
+          { department_id: dto.department_id, service_id: dto.service_id, scheduled_date: scheduledDate, time_slot: timeSlot, status: 'serving' },
+          { department_id: dto.department_id, service_id: dto.service_id, scheduled_date: scheduledDate, time_slot: timeSlot, status: 'completed' },
+          { department_id: dto.department_id, service_id: dto.service_id, scheduled_date: scheduledDate, time_slot: timeSlot, status: 'missed' },
+        ],
       });
 
       if (countInSlot >= capacity) {
@@ -230,24 +248,29 @@ export class TicketsService {
 
     const today = new Date().toISOString().split('T')[0];
 
-    // Беремо найменший номер талону на СЬОГОДНІ з загальної черги
-    const ticket = await this.repo.findOne({
-      where: {
-        department_id: window.department_id,
-        service_id: window.service_id,
-        status: 'waiting',
-        window_id: IsNull(),
-        scheduled_date: today,
-      },
-      order: { ticket_number: 'ASC' },
+    // SELECT FOR UPDATE SKIP LOCKED — атомарно захоплює наступний талон,
+    // інший одночасний call-next пропустить цей рядок і візьме наступний
+    const ticket = await this.dataSource.transaction(async (manager) => {
+      const t = await manager
+        .createQueryBuilder(Ticket, 't')
+        .where('t.department_id = :dep', { dep: window.department_id })
+        .andWhere('t.service_id = :svc', { svc: window.service_id })
+        .andWhere('t.status = :status', { status: 'waiting' })
+        .andWhere('t.window_id IS NULL')
+        .andWhere('t.scheduled_date = :today', { today })
+        .orderBy('t.ticket_number', 'ASC')
+        .setLock('pessimistic_write')
+        .getOne();
+
+      if (!t) throw new NotFoundException('Черга порожня');
+
+      t.window_id = windowId;
+      t.staff_id = staffId;
+      t.status = 'called';
+      t.called_at = new Date();
+
+      return manager.save(Ticket, t);
     });
-
-    if (!ticket) throw new NotFoundException('Черга порожня');
-
-    ticket.window_id = windowId;
-    ticket.staff_id = staffId;
-    ticket.status = 'called';
-    ticket.called_at = new Date();
 
     window.current_number = ticket.ticket_number;
     await this.windowRepo.save(window);
@@ -345,7 +368,7 @@ export class TicketsService {
     const ticket = await this.repo.findOneBy({ id: ticketId });
     if (!ticket) throw new NotFoundException('Талон не знайдено');
     if (ticket.client_id !== clientId) throw new ForbiddenException('Доступ заборонено');
-    if (['completed', 'missed', 'cancelled'].includes(ticket.status))
+    if (!['waiting', 'called'].includes(ticket.status))
       throw new UnprocessableEntityException('Талон вже не можна скасувати');
 
     ticket.status = 'cancelled';
@@ -361,9 +384,10 @@ export class TicketsService {
 
   async start(ticketId: string, staffId: string) {
     const ticket = await this.requireStatus(ticketId, 'called');
+    if (ticket.staff_id !== staffId)
+      throw new ForbiddenException('Цей талон не призначений вашому вікну');
     ticket.status = 'serving';
     ticket.serving_started_at = new Date();
-    ticket.staff_id = staffId;
 
     await this.auditsService.record({ ticket_id: ticket.id, staff_id: staffId, action: 'serving_started' });
     const saved = await this.repo.save(ticket);
@@ -373,6 +397,8 @@ export class TicketsService {
 
   async complete(ticketId: string, staffId: string, dto: CompleteTicketDto) {
     const ticket = await this.requireStatus(ticketId, 'serving');
+    if (ticket.staff_id !== staffId)
+      throw new ForbiddenException('Цей талон не призначений вашому вікну');
     const now = new Date();
     ticket.status = 'completed';
     ticket.completed_at = now;
@@ -393,6 +419,13 @@ export class TicketsService {
     const saved = await this.repo.save(ticket);
     this.queueGateway.emitTicketUpdated(saved.department_id, saved);
 
+    // Скидаємо current_number вікна щоб табло очистило відображення
+    if (saved.window_id) {
+      await this.windowRepo.update(saved.window_id, { current_number: 0 });
+      const win = await this.windowRepo.findOneBy({ id: saved.window_id });
+      if (win) this.queueGateway.emitWindowUpdated(win.department_id, { ...win, waiting_count: 0 });
+    }
+
     if (saved.client_id) {
       this.disciplineEvents.log({
         user_id: saved.client_id,
@@ -410,6 +443,8 @@ export class TicketsService {
     if (!ticket) throw new NotFoundException('Талон не знайдено');
     if (!['waiting', 'called'].includes(ticket.status))
       throw new UnprocessableEntityException('Неможливо відмітити як відсутній');
+    if (ticket.status === 'called' && ticket.staff_id !== staffId)
+      throw new ForbiddenException('Цей талон не призначений вашому вікну');
 
     ticket.status = 'missed';
     ticket.is_missed_by_client = true;
@@ -499,6 +534,18 @@ export class TicketsService {
       .andWhere('t.ticket_number < :num', { num: ticket.ticket_number })
       .andWhere('t.scheduled_date = :date', { date: ticket.scheduled_date })
       .getCount();
+  }
+
+  private async countActiveInSlot(deptId: string, svcId: string, date: string, slot: string): Promise<number> {
+    return this.repo.count({
+      where: [
+        { department_id: deptId, service_id: svcId, scheduled_date: date, time_slot: slot, status: 'waiting' },
+        { department_id: deptId, service_id: svcId, scheduled_date: date, time_slot: slot, status: 'called' },
+        { department_id: deptId, service_id: svcId, scheduled_date: date, time_slot: slot, status: 'serving' },
+        { department_id: deptId, service_id: svcId, scheduled_date: date, time_slot: slot, status: 'completed' },
+        { department_id: deptId, service_id: svcId, scheduled_date: date, time_slot: slot, status: 'missed' },
+      ],
+    });
   }
 
   private async requireStatus(ticketId: string, expected: string) {

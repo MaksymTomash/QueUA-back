@@ -157,7 +157,7 @@ export class RatingsService {
   private async updateDepartmentRating(departmentId: string) {
     const result = await this.repo
       .createQueryBuilder('r')
-      .innerJoin(Ticket, 't', 't.id = r.ticket_id')
+      .innerJoin(Ticket, 't', 'CAST(t.id AS TEXT) = r.ticket_id')
       .select('AVG(r.score)', 'avg')
       .where('t.department_id = :departmentId', { departmentId })
       .andWhere('r.type = :type', { type: 'client' })

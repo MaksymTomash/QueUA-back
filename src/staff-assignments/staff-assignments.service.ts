@@ -42,7 +42,13 @@ export class StaffAssignmentsService {
     await this.repo.remove(assignment);
   }
 
-  isAssigned(departmentId: string, staffId: string): Promise<boolean> {
-    return this.repo.exists({ where: { department_id: departmentId, staff_id: staffId } });
+  isAssigned(departmentId: string, staffId: string, serviceId?: string): Promise<boolean> {
+    return this.repo.exists({
+      where: {
+        department_id: departmentId,
+        staff_id: staffId,
+        ...(serviceId ? { service_id: serviceId } : {}),
+      },
+    });
   }
 }
