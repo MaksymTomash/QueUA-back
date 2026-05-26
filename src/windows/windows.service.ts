@@ -81,6 +81,7 @@ export class WindowsService {
     if (win.staff_id !== staffId) throw new ForbiddenException('Ви не сидите за цим вікном');
     win.staff_id = null;
     win.status = 'open';
+    win.current_number = 0;
     const saved = await this.repo.save(win);
     const result = await this.withWaitingCount(saved);
     this.queueGateway.emitWindowUpdated(saved.department_id, result);

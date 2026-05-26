@@ -6,7 +6,7 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, IsNull, Not, Repository } from 'typeorm';
+import { DataSource, Not, Repository } from 'typeorm';
 import { Ticket } from './ticket.entity';
 import { Window } from '../windows/window.entity';
 import { QueueService } from '../services/service.entity';
@@ -222,7 +222,7 @@ export class TicketsService {
 
     const ticket = this.repo.create({
       window_id: dto.window_id,
-      client_id: '',
+      client_id: dto.client_id ?? '',
       staff_id: staffId,
       service_id: dto.service_id,
       department_id: window.department_id,
@@ -310,7 +310,10 @@ export class TicketsService {
   }
 
   async findOne(id: string, requesterId: string, requesterRole: string) {
-    const ticket = await this.repo.findOneBy({ id });
+    const ticket = await this.repo.findOne({
+      where: { id },
+      relations: { service: true, department: true },
+    });
     if (!ticket) throw new NotFoundException('Талон не знайдено');
 
     if (requesterRole === 'citizen' && ticket.client_id !== requesterId)
@@ -319,17 +322,30 @@ export class TicketsService {
     const position =
       ticket.status === 'waiting' ? await this.countAheadInSlot(ticket) : 0;
 
-    return { ...ticket, position };
+    let client: object | null = null;
+    let staff: object | null = null;
+
+    if (requesterRole !== 'citizen' && ticket.client_id) {
+      const u = await this.userRepo.findOneBy({ id: ticket.client_id });
+      if (u) client = { id: u.id, first_name: u.first_name, last_name: u.last_name, email: u.email, phone: u.phone };
+    }
+    if (ticket.staff_id) {
+      const u = await this.userRepo.findOneBy({ id: ticket.staff_id });
+      if (u) staff = { id: u.id, first_name: u.first_name, last_name: u.last_name, email: u.email };
+    }
+
+    return { ...ticket, position, client, staff };
   }
 
   async findAll(query: QueryTicketsDto) {
-    const { department_id, window_id, date, status, page = 1, page_size = 20 } = query;
+    const { department_id, window_id, date, status, staff_id, page = 1, page_size = 20 } = query;
     const qb = this.repo.createQueryBuilder('t').orderBy('t.ticket_number', 'ASC');
 
     if (department_id) qb.andWhere('t.department_id = :department_id', { department_id });
     if (window_id) qb.andWhere('t.window_id = :window_id', { window_id });
     if (status) qb.andWhere('t.status = :status', { status });
     if (date) qb.andWhere('t.scheduled_date = :date', { date });
+    if (staff_id) qb.andWhere('t.staff_id = :staff_id', { staff_id });
 
     return qb.skip((page - 1) * page_size).take(page_size).getMany();
   }
@@ -339,15 +355,27 @@ export class TicketsService {
     if (!window) throw new NotFoundException('Вікно не знайдено');
 
     const today = new Date().toISOString().split('T')[0];
-    return this.repo.find({
-      where: {
-        department_id: window.department_id,
-        service_id: window.service_id,
-        status: 'waiting',
-        scheduled_date: today,
-      },
-      order: { ticket_number: 'ASC' },
-    });
+
+    const [waiting, active] = await Promise.all([
+      this.repo.find({
+        where: {
+          department_id: window.department_id,
+          service_id: window.service_id,
+          status: 'waiting',
+          scheduled_date: today,
+        },
+        order: { ticket_number: 'ASC' },
+      }),
+      this.repo.findOne({
+        where: [
+          { window_id: windowId, status: 'called' },
+          { window_id: windowId, status: 'serving' },
+        ],
+        order: { called_at: 'DESC' },
+      }),
+    ]);
+
+    return { waiting, active: active ?? null };
   }
 
   async countWaitingForWindow(window: Window): Promise<number> {
@@ -419,12 +447,7 @@ export class TicketsService {
     const saved = await this.repo.save(ticket);
     this.queueGateway.emitTicketUpdated(saved.department_id, saved);
 
-    // Скидаємо current_number вікна щоб табло очистило відображення
-    if (saved.window_id) {
-      await this.windowRepo.update(saved.window_id, { current_number: 0 });
-      const win = await this.windowRepo.findOneBy({ id: saved.window_id });
-      if (win) this.queueGateway.emitWindowUpdated(win.department_id, { ...win, waiting_count: 0 });
-    }
+    if (saved.window_id) await this.resetWindowDisplay(saved.window_id);
 
     if (saved.client_id) {
       this.disciplineEvents.log({
@@ -452,6 +475,8 @@ export class TicketsService {
     await this.auditsService.record({ ticket_id: ticket.id, staff_id: staffId, action: 'missed' });
     const saved = await this.repo.save(ticket);
     this.queueGateway.emitTicketUpdated(saved.department_id, saved);
+
+    if (saved.window_id) await this.resetWindowDisplay(saved.window_id);
 
     if (saved.client_id) {
       this.disciplineEvents.log({
@@ -546,6 +571,14 @@ export class TicketsService {
         { department_id: deptId, service_id: svcId, scheduled_date: date, time_slot: slot, status: 'missed' },
       ],
     });
+  }
+
+  private async resetWindowDisplay(windowId: string) {
+    await this.windowRepo.update(windowId, { current_number: 0 });
+    const win = await this.windowRepo.findOneBy({ id: windowId });
+    if (!win) return;
+    const waiting_count = await this.countWaitingForWindow(win);
+    this.queueGateway.emitWindowUpdated(win.department_id, { ...win, waiting_count });
   }
 
   private async requireStatus(ticketId: string, expected: string) {

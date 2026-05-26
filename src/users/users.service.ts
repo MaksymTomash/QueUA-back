@@ -25,9 +25,15 @@ export class UsersService {
   }
 
   async findAll(query: QueryUsersDto) {
-    const { role, page = 1, page_size = 20 } = query;
+    const { role, search, page = 1, page_size = 20 } = query;
     const qb = this.userRepo.createQueryBuilder('user');
-    if (role) qb.where('user.role = :role', { role });
+    if (role) qb.andWhere('user.role = :role', { role });
+    if (search) {
+      qb.andWhere(
+        '(user.first_name ILIKE :q OR user.last_name ILIKE :q OR user.email ILIKE :q)',
+        { q: `%${search}%` },
+      );
+    }
     qb.skip((page - 1) * page_size).take(page_size);
     const users = await qb.getMany();
     return users.map(this.mapUser);

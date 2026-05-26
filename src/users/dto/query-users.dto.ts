@@ -1,5 +1,5 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsEnum, IsInt, IsOptional, Min } from 'class-validator';
+import { IsEnum, IsInt, IsOptional, IsString, Min } from 'class-validator';
 import { Transform } from 'class-transformer';
 
 export class QueryUsersDto {
@@ -7,6 +7,11 @@ export class QueryUsersDto {
   @IsOptional()
   @IsEnum(['citizen', 'staff', 'admin'])
   role?: 'citizen' | 'staff' | 'admin';
+
+  @ApiPropertyOptional({ example: 'Іваненко' })
+  @IsOptional()
+  @IsString()
+  search?: string;
 
   @ApiPropertyOptional({ default: 1 })
   @IsOptional()

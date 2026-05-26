@@ -20,6 +20,15 @@ export class StaffAssignmentsService {
       .getMany();
   }
 
+  findByStaff(staffId: string) {
+    return this.repo
+      .createQueryBuilder('sa')
+      .leftJoinAndSelect('sa.department', 'department')
+      .leftJoinAndSelect('sa.service', 'service')
+      .where('sa.staff_id = :staffId', { staffId })
+      .getMany();
+  }
+
   async assign(departmentId: string, dto: AssignStaffDto) {
     const exists = await this.repo.findOneBy({
       department_id: departmentId,

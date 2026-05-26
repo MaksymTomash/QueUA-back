@@ -109,7 +109,10 @@ export class RatingsService {
   // ─── Агрегат по спеціалісту ───────────────────────────────────────────────
 
   async getPerformance(staffId: string) {
-    const [avgResult, ticketsResult] = await Promise.all([
+    const today = new Date().toISOString().split('T')[0];
+    const monthStart = today.slice(0, 7) + '-01';
+
+    const [avgResult, ticketsResult, missedResult, todayResult, monthResult] = await Promise.all([
       this.repo
         .createQueryBuilder('r')
         .select('AVG(r.score)', 'average_score')
@@ -126,6 +129,22 @@ export class RatingsService {
         .andWhere('t.status = :status', { status: 'completed' })
         .andWhere('t.serving_started_at IS NOT NULL')
         .getRawOne<{ tickets_served: string; avg_ms: string }>(),
+
+      this.ticketRepo.count({ where: { staff_id: staffId, status: 'missed' } }),
+
+      this.ticketRepo
+        .createQueryBuilder('t')
+        .where('t.staff_id = :staffId', { staffId })
+        .andWhere('t.scheduled_date = :today', { today })
+        .andWhere('t.status IN (:...s)', { s: ['completed', 'serving', 'called'] })
+        .getCount(),
+
+      this.ticketRepo
+        .createQueryBuilder('t')
+        .where('t.staff_id = :staffId', { staffId })
+        .andWhere('t.scheduled_date >= :monthStart', { monthStart })
+        .andWhere('t.status = :status', { status: 'completed' })
+        .getCount(),
     ]);
 
     return {
@@ -134,6 +153,9 @@ export class RatingsService {
       ratings_count: parseInt(avgResult?.ratings_count ?? '0'),
       tickets_served: parseInt(ticketsResult?.tickets_served ?? '0'),
       average_serving_time_ms: Math.round(parseFloat(ticketsResult?.avg_ms ?? '0') || 0),
+      tickets_missed: missedResult,
+      tickets_today: todayResult,
+      tickets_this_month: monthResult,
     };
   }
 

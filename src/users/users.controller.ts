@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -12,6 +13,7 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { UsersService } from './users.service';
+import { StaffAssignmentsService } from '../staff-assignments/staff-assignments.service';
 import { UpdateMeDto } from './dto/update-me.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { QueryUsersDto } from './dto/query-users.dto';
@@ -25,12 +27,22 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('users')
 export class UsersController {
-  constructor(private readonly usersService: UsersService) {}
+  constructor(
+    private readonly usersService: UsersService,
+    private readonly staffAssignments: StaffAssignmentsService,
+  ) {}
 
   @ApiOperation({ summary: 'Профіль поточного користувача' })
   @Get('me')
   getMe(@CurrentUser('sub') userId: string) {
     return this.usersService.findMe(userId);
+  }
+
+  @ApiOperation({ summary: 'Призначення поточного спеціаліста (staff/admin)' })
+  @Roles('staff', 'admin')
+  @Get('me/assignments')
+  getMyAssignments(@CurrentUser('sub') staffId: string) {
+    return this.staffAssignments.findByStaff(staffId);
   }
 
   @ApiOperation({ summary: 'Оновити власний профіль' })
@@ -39,10 +51,13 @@ export class UsersController {
     return this.usersService.updateMe(userId, dto);
   }
 
-  @ApiOperation({ summary: 'Список всіх користувачів (admin)' })
-  @Roles('admin')
+  @ApiOperation({ summary: 'Список користувачів (admin — всі; staff — тільки з role фільтром)' })
+  @Roles('staff', 'admin')
   @Get()
-  findAll(@Query() query: QueryUsersDto) {
+  findAll(@Query() query: QueryUsersDto, @CurrentUser('role') requesterRole: string) {
+    if (requesterRole === 'staff' && !query.role) {
+      throw new BadRequestException('Параметр role є обовʼязковим для staff');
+    }
     return this.usersService.findAll(query);
   }
 

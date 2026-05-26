@@ -23,6 +23,11 @@ export class QueryTicketsDto {
   @IsString()
   status?: string;
 
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  staff_id?: string;
+
   @ApiPropertyOptional({ default: 1 })
   @IsOptional()
   @Transform(({ value }) => parseInt(value))

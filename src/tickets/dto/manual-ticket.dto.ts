@@ -1,5 +1,5 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsString } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsOptional, IsString } from 'class-validator';
 
 export class ManualTicketDto {
   @ApiProperty()
@@ -9,4 +9,9 @@ export class ManualTicketDto {
   @ApiProperty()
   @IsString()
   service_id: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  client_id?: string;
 }
