@@ -16,6 +16,7 @@ export class DepartmentServicesService {
       .createQueryBuilder('ds')
       .leftJoinAndSelect('ds.service', 'service')
       .where('ds.department_id = :departmentId', { departmentId })
+      .andWhere('ds.is_active = true')
       .getMany();
   }
 

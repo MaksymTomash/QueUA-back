@@ -10,4 +10,14 @@ export class ReviewVerificationDto {
   @ValidateIf((o) => o.status === 'rejected')
   @IsString()
   rejection_reason?: string;
+
+  @ApiPropertyOptional({ description: 'Номер паспорту або ID-картки — записується в профіль при схваленні' })
+  @IsOptional()
+  @IsString()
+  passport_number?: string;
+
+  @ApiPropertyOptional({ description: 'ІПН (РНОКПП) — записується в профіль при схваленні' })
+  @IsOptional()
+  @IsString()
+  tax_id?: string;
 }

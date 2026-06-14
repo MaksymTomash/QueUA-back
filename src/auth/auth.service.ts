@@ -8,6 +8,7 @@ import { Repository } from 'typeorm';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
+import * as admin from 'firebase-admin';
 import { randomUUID } from 'crypto';
 import { User } from '../users/user.entity';
 import { RefreshToken } from './refresh-token.entity';
@@ -76,6 +77,39 @@ export class AuthService {
     if (!user) throw new UnauthorizedException('Користувача не знайдено');
 
     await this.refreshTokenRepo.remove(stored);
+
+    return this.issueTokens(user);
+  }
+
+  async googleLogin(idToken: string) {
+    let firebaseUser: admin.auth.DecodedIdToken;
+    try {
+      firebaseUser = await admin.auth().verifyIdToken(idToken);
+    } catch {
+      throw new UnauthorizedException('Недійсний Firebase ID Token');
+    }
+
+    const { email, name, picture } = firebaseUser;
+    if (!email) throw new UnauthorizedException('Google акаунт не має email');
+
+    let user = await this.userRepo.findOneBy({ email });
+
+    if (!user) {
+      // Перший вхід — створюємо акаунт автоматично
+      const nameParts = (name ?? '').split(' ');
+      user = this.userRepo.create({
+        email,
+        password_hash: '',          // Google-юзери не мають пароля
+        first_name: nameParts[0] ?? email.split('@')[0],
+        last_name: nameParts[1] ?? '',
+        avatar_url: picture ?? null,
+      });
+      await this.userRepo.save(user);
+    } else if (picture && !user.avatar_url) {
+      // Оновлюємо аватар якщо ще не встановлений
+      await this.userRepo.update(user.id, { avatar_url: picture });
+      user.avatar_url = picture;
+    }
 
     return this.issueTokens(user);
   }

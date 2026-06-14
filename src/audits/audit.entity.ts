@@ -8,6 +8,7 @@ import {
 
 export type AuditAction =
   | 'called'
+  | 'client_identified'
   | 'serving_started'
   | 'completed'
   | 'missed'
@@ -27,7 +28,7 @@ export class TicketAudit {
 
   @Column({
     type: 'enum',
-    enum: ['called', 'serving_started', 'completed', 'missed', 'redirected', 'cancelled'],
+    enum: ['called', 'client_identified', 'serving_started', 'completed', 'missed', 'redirected', 'cancelled'],
   })
   action: AuditAction;
 

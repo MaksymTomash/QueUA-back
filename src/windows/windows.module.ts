@@ -6,6 +6,7 @@ import { Window } from './window.entity';
 import { TicketsModule } from '../tickets/tickets.module';
 import { QueueModule } from '../queue/queue.module';
 import { StaffAssignmentsModule } from '../staff-assignments/staff-assignments.module';
+import { DepartmentsModule } from '../departments/departments.module';
 
 @Module({
   imports: [
@@ -13,6 +14,7 @@ import { StaffAssignmentsModule } from '../staff-assignments/staff-assignments.m
     forwardRef(() => TicketsModule),
     QueueModule,
     StaffAssignmentsModule,
+    DepartmentsModule,
   ],
   controllers: [WindowsController],
   providers: [WindowsService],

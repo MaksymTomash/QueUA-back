@@ -5,6 +5,7 @@ import {
   IsObject,
   IsOptional,
   IsString,
+  Matches,
 } from 'class-validator';
 
 export class CreateDepartmentDto {
@@ -39,6 +40,15 @@ export class CreateDepartmentDto {
   @IsOptional()
   @IsObject()
   working_hours?: Record<string, string>;
+
+  @ApiPropertyOptional({
+    example: '14:00',
+    description: 'Час початку живої черги (HH:00). До цього часу — лише попередній запис. Не вказано — лише запис.',
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(/^\d{2}:00$/, { message: 'Формат часу — "HH:00", напр. "14:00"' })
+  live_queue_from?: string;
 
   @ApiPropertyOptional()
   @IsOptional()

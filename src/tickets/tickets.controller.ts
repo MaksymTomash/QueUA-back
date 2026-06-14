@@ -13,6 +13,7 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { TicketsService } from './tickets.service';
 import { BookTicketDto } from './dto/book-ticket.dto';
 import { ManualTicketDto } from './dto/manual-ticket.dto';
+import { IdentifyClientDto } from './dto/identify-client.dto';
 import { CompleteTicketDto } from './dto/complete-ticket.dto';
 import { QueryTicketsDto } from './dto/query-tickets.dto';
 import { SlotsQueryDto } from './dto/slots-query.dto';
@@ -85,6 +86,17 @@ export class TicketsController {
   @Get()
   findAll(@Query() query: QueryTicketsDto) {
     return this.ticketsService.findAll(query);
+  }
+
+  @ApiOperation({ summary: 'Ідентифікувати клієнта анонімного талону (staff)' })
+  @Roles('staff', 'admin')
+  @Post(':id/identify')
+  identify(
+    @Param('id') id: string,
+    @CurrentUser('sub') staffId: string,
+    @Body() dto: IdentifyClientDto,
+  ) {
+    return this.ticketsService.identifyClient(id, staffId, dto);
   }
 
   @ApiOperation({ summary: 'Почати обслуговування (staff)' })

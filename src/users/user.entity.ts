@@ -39,10 +39,17 @@ export class User {
   @Column({ default: false })
   is_verified: boolean;
 
-  @Column({ type: 'float', default: 0 })
+  // ІПН — для ідентифікації відвідувачів та обліку даних персоналу
+  @Column({ type: 'varchar', nullable: true })
+  tax_id: string | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  passport_number: string | null;
+
+  @Column({ type: 'float', default: 80 })
   discipline_score: number;
 
-  @Column({ type: 'float', default: 0 })
+  @Column({ type: 'float', default: 1 })
   attendance_rate: number;
 
   @Column({ default: 0 })
@@ -50,6 +57,9 @@ export class User {
 
   @Column({ type: 'varchar', nullable: true })
   avatar_url: string | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  document_photo_url: string | null;
 
   @CreateDateColumn()
   created_at: Date;

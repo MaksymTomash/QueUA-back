@@ -40,6 +40,42 @@ const rnd = (min: number, max: number) => Math.floor(Math.random() * (max - min 
 const pick = <T>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
 const chance = (p: number) => Math.random() < p;
 
+// Локальні дати (без UTC-зсуву) — узгоджено з shared/utils/local-date.ts на фронтенді
+function toLocalISODate(d: Date): string {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+function addDaysLocal(date: string, days: number): string {
+  const d = new Date(date + 'T00:00:00');
+  d.setDate(d.getDate() + days);
+  return toLocalISODate(d);
+}
+
+// Слоти запису з кроком, що дорівнює тривалості обслуговування (узгоджено з tickets.service.ts)
+function slotTimes(openHour: number, closeHour: number, intervalMinutes: number): string[] {
+  const times: string[] = [];
+  const totalMinutes = (closeHour - openHour) * 60;
+  for (let m = 0; m < totalMinutes; m += intervalMinutes) {
+    const h = openHour + Math.floor(m / 60);
+    const mm = m % 60;
+    times.push(`${String(h).padStart(2, '0')}:${String(mm).padStart(2, '0')}`);
+  }
+  return times;
+}
+
+const DAY_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+function workingHoursFor(dept: Department, date: string): { openHour: number; closeHour: number } | null {
+  const [y, m, d] = date.split('-').map(Number);
+  const dayKey = DAY_KEYS[new Date(y, m - 1, d).getDay()];
+  const hours: string = dept.working_hours?.[dayKey] ?? 'вихідний';
+  if (hours === 'вихідний') return null;
+  const match = hours.match(/(\d{2}):(\d{2})[–-](\d{2}):(\d{2})/);
+  if (!match) return null;
+  return { openHour: parseInt(match[1]), closeHour: parseInt(match[3]) };
+}
+
 interface TicketSpec {
   client_id: string;
   service_id: string;
@@ -49,9 +85,9 @@ interface TicketSpec {
   prefix: string;
   status: TicketStatus;
   scheduled_date: string;
-  time_slot: string;
-  estimated_start_at: Date;
-  estimated_end_at: Date;
+  time_slot: string | null;
+  estimated_start_at: Date | null;
+  estimated_end_at: Date | null;
   called_at: Date | null;
   serving_started_at: Date | null;
   completed_at: Date | null;
@@ -130,6 +166,59 @@ function generateDayTickets(
   return tickets;
 }
 
+// Майбутні бронювання («попередній запис», статус завжди 'waiting', без обслуговування ще) —
+// слоти йдуть із кроком тривалості послуги, капасіті слоту = к-сть відкритих вікон (як у calcSlotCapacity).
+function generateFutureBookings(
+  dept: Department,
+  svc: QueueService,
+  dates: string[],
+  capacity: number,
+  citizens: User[],
+  fillRate: number,
+  liveQueueFromHour: number | null,
+): TicketSpec[] {
+  const tickets: TicketSpec[] = [];
+  const usedIds = new Set<string>(); // громадянин не може мати кілька активних записів на одну послугу
+
+  for (const date of dates) {
+    const wh = workingHoursFor(dept, date);
+    if (!wh) continue;
+    const bookingCloseHour = liveQueueFromHour !== null ? Math.min(liveQueueFromHour, wh.closeHour) : wh.closeHour;
+
+    slotTimes(wh.openHour, bookingCloseHour, svc.estimated_duration_minutes).forEach((time, slotIndex) => {
+      for (let i = 0; i < capacity; i++) {
+        if (!chance(fillRate)) continue;
+
+        const pool = citizens.filter(c => !usedIds.has(c.id));
+        if (!pool.length) return;
+        const citizen = pick(pool);
+        usedIds.add(citizen.id);
+
+        const slotStart = new Date(`${date}T${time}:00`);
+        tickets.push({
+          client_id: citizen.id,
+          service_id: svc.id,
+          department_id: dept.id,
+          staff_id: null,
+          ticket_number: slotIndex * capacity + 1 + i,
+          prefix: svc.ticket_prefix,
+          status: 'waiting',
+          scheduled_date: date,
+          time_slot: time,
+          estimated_start_at: slotStart,
+          estimated_end_at: new Date(slotStart.getTime() + svc.estimated_duration_minutes * 60_000),
+          called_at: null,
+          serving_started_at: null,
+          completed_at: null,
+          cancelled_at: null,
+          is_missed_by_client: false,
+        });
+      }
+    });
+  }
+  return tickets;
+}
+
 // ─── Seed ─────────────────────────────────────────────────────────────────────
 
 async function seed() {
@@ -143,7 +232,7 @@ async function seed() {
     RESTART IDENTITY CASCADE`);
   console.log('Cleaned tables');
 
-  const today = new Date().toISOString().split('T')[0]; // 2026-05-24 (Sat)
+  const today = toLocalISODate(new Date());
 
   // ─── Послуги ─────────────────────────────────────────────────────────────────
   const serviceRepo = ds.getRepository(QueueService);
@@ -166,6 +255,7 @@ async function seed() {
       address: 'вул. Хрещатик, 36', city: 'Київ', phone: '+38 044 202-40-00',
       latitude: 50.4501, longitude: 30.5234,
       working_hours: { mon: '08:00–19:00', tue: '08:00–19:00', wed: '08:00–19:00', thu: '08:00–19:00', fri: '08:00–18:00', sat: '09:00–14:00', sun: 'вихідний' },
+      live_queue_from: '13:00',
       is_active: true, rating: 0,
     },
     {
@@ -173,6 +263,7 @@ async function seed() {
       address: 'вул. Інститутська, 4', city: 'Київ', phone: '+38 044 253-60-60',
       latitude: 50.4399, longitude: 30.5332,
       working_hours: { mon: '09:00–18:00', tue: '09:00–18:00', wed: '09:00–18:00', thu: '09:00–18:00', fri: '09:00–17:00', sat: 'вихідний', sun: 'вихідний' },
+      live_queue_from: '12:00',
       is_active: true, rating: 0,
     },
   ]);
@@ -237,19 +328,23 @@ async function seed() {
 
   // ─── Вікна ───────────────────────────────────────────────────────────────────
   const windowRepo = ds.getRepository(Window);
-  await windowRepo.save([
-    { label: 'Вікно №1', department_id: deptShev.id, service_id: svcPassport.id, staff_id: ivanova.id,   status: 'open',   current_number: 0, date: today },
-    { label: 'Вікно №2', department_id: deptShev.id, service_id: svcPassport.id, staff_id: null,         status: 'closed', current_number: 0, date: today },
-    { label: 'Вікно №3', department_id: deptShev.id, service_id: svcForeign.id,  staff_id: petrenko.id,  status: 'open',   current_number: 0, date: today },
-    { label: 'Вікно №4', department_id: deptShev.id, service_id: svcForeign.id,  staff_id: null,         status: 'closed', current_number: 0, date: today },
-    { label: 'Вікно №5', department_id: deptShev.id, service_id: svcResidence.id, staff_id: null,        status: 'closed', current_number: 0, date: today },
-    { label: 'Вікно №1', department_id: deptPech.id, service_id: svcSocial.id,   staff_id: kovalenko.id, status: 'open',   current_number: 0, date: today },
-    { label: 'Вікно №2', department_id: deptPech.id, service_id: svcSocial.id,   staff_id: null,         status: 'closed', current_number: 0, date: today },
-    { label: 'Вікно №3', department_id: deptPech.id, service_id: svcFop.id,      staff_id: melnyk.id,    status: 'open',   current_number: 0, date: today },
-    { label: 'Вікно №4', department_id: deptPech.id, service_id: svcLand.id,     staff_id: bondar.id,    status: 'open',   current_number: 0, date: today },
-    { label: 'Вікно №5', department_id: deptPech.id, service_id: svcLand.id,     staff_id: null,         status: 'closed', current_number: 0, date: today },
+  const savedWindows = await windowRepo.save([
+    { label: 'Вікно №1', department_id: deptShev.id, service_id: svcPassport.id,  staff_id: null, status: 'open',   current_number: 0, date: today },
+    { label: 'Вікно №2', department_id: deptShev.id, service_id: svcPassport.id,  staff_id: null, status: 'closed', current_number: 0, date: today },
+    { label: 'Вікно №3', department_id: deptShev.id, service_id: svcForeign.id,   staff_id: null, status: 'open',   current_number: 0, date: today },
+    { label: 'Вікно №4', department_id: deptShev.id, service_id: svcForeign.id,   staff_id: null, status: 'closed', current_number: 0, date: today },
+    { label: 'Вікно №5', department_id: deptShev.id, service_id: svcResidence.id, staff_id: null, status: 'open',   current_number: 0, date: today },
+    { label: 'Вікно №1', department_id: deptPech.id, service_id: svcSocial.id,    staff_id: null, status: 'open',   current_number: 0, date: today },
+    { label: 'Вікно №2', department_id: deptPech.id, service_id: svcSocial.id,    staff_id: null, status: 'open',   current_number: 0, date: today },
+    { label: 'Вікно №3', department_id: deptPech.id, service_id: svcFop.id,       staff_id: null, status: 'open',   current_number: 0, date: today },
+    { label: 'Вікно №4', department_id: deptPech.id, service_id: svcLand.id,      staff_id: null, status: 'open',   current_number: 0, date: today },
+    { label: 'Вікно №5', department_id: deptPech.id, service_id: svcLand.id,      staff_id: null, status: 'closed', current_number: 0, date: today },
   ]);
   console.log('Windows created: 10');
+
+  // Капасіті слоту = к-сть відкритих вікон (узгоджено з calcSlotCapacity у tickets.service.ts)
+  const windowCountFor = (deptId: string, svcId: string): number =>
+    Math.max(1, savedWindows.filter(w => w.department_id === deptId && w.service_id === svcId && w.status !== 'closed').length);
 
   // ─── Послуги відділень ───────────────────────────────────────────────────────
   const deptSvcRepo = ds.getRepository(DeptService);
@@ -304,28 +399,24 @@ async function seed() {
     }
   }
 
-  // ─── Талони на сьогодні (Сб, Шевченківський 09:00–14:00) ─────────────────────
-  // Кілька waiting-талонів щоб черга була не порожня
-  const todaySlots = [9, 9, 9, 10, 10, 11, 11, 12]; // навмисно кілька на один слот
+  // ─── Талони на сьогодні (Сб, Шевченківський 09:00–14:00, жива черга з 13:00) ──
+  // Кілька waiting-талонів щоб черга була не порожня: частина — записані на конкретний
+  // час (фаза запису, до 13:00), частина — живочергові (time_slot: null, FIFO з 1)
   const todayPassportCitizens = [...verified].sort(() => Math.random() - 0.5).slice(0, 5);
   const todayForeignCitizens  = [...verified].sort(() => Math.random() - 0.5).slice(0, 3);
 
-  // Сьогоднішні ПС
-  const passSlotCnt = new Map<number, number>();
-  for (const citizen of todayPassportCitizens) {
-    const h = todaySlots[allSpecs.length % todaySlots.length] ?? 9;
-    // просто беремо по одному на слот
-    const slot = passSlotCnt.size < 5 ? 9 + passSlotCnt.size : 9;
-    const cnt = passSlotCnt.get(slot) ?? 0;
-    if (cnt >= 3) continue;
-    passSlotCnt.set(slot, cnt + 1);
-    const tNum = (slot - 9) * 3 + 1 + cnt;
+  // Сьогоднішні ПС: 3 за записом (слоти 09:00–11:00) + решта — жива черга
+  const passportAppointments = todayPassportCitizens.slice(0, 3);
+  const passportWalkins = todayPassportCitizens.slice(3);
+
+  passportAppointments.forEach((citizen, idx) => {
+    const slot = 9 + idx;
     allSpecs.push({
       client_id: citizen.id,
       service_id: svcPassport.id,
       department_id: deptShev.id,
       staff_id: null,
-      ticket_number: tNum,
+      ticket_number: idx + 1,
       prefix: 'ПС',
       status: 'waiting',
       scheduled_date: today,
@@ -338,21 +429,41 @@ async function seed() {
       cancelled_at: null,
       is_missed_by_client: false,
     });
-  }
+  });
 
-  // Сьогоднішні ЗП
-  const forSlotCnt = new Map<number, number>();
-  for (const citizen of todayForeignCitizens) {
-    const slot = 10 + forSlotCnt.size;
-    if (slot >= 14) break;
-    forSlotCnt.set(slot, 1);
-    const tNum = (slot - 9) * 4 + 1;
+  passportWalkins.forEach((citizen, idx) => {
+    allSpecs.push({
+      client_id: citizen.id,
+      service_id: svcPassport.id,
+      department_id: deptShev.id,
+      staff_id: null,
+      ticket_number: idx + 1,
+      prefix: 'ПС',
+      status: 'waiting',
+      scheduled_date: today,
+      time_slot: null,
+      estimated_start_at: null,
+      estimated_end_at: null,
+      called_at: null,
+      serving_started_at: null,
+      completed_at: null,
+      cancelled_at: null,
+      is_missed_by_client: false,
+    });
+  });
+
+  // Сьогоднішні ЗП: 2 за записом (слоти 10:00–11:00) + решта — жива черга
+  const foreignAppointments = todayForeignCitizens.slice(0, 2);
+  const foreignWalkins = todayForeignCitizens.slice(2);
+
+  foreignAppointments.forEach((citizen, idx) => {
+    const slot = 10 + idx;
     allSpecs.push({
       client_id: citizen.id,
       service_id: svcForeign.id,
       department_id: deptShev.id,
       staff_id: null,
-      ticket_number: tNum,
+      ticket_number: idx + 1,
       prefix: 'ЗП',
       status: 'waiting',
       scheduled_date: today,
@@ -365,7 +476,58 @@ async function seed() {
       cancelled_at: null,
       is_missed_by_client: false,
     });
+  });
+
+  foreignWalkins.forEach((citizen, idx) => {
+    allSpecs.push({
+      client_id: citizen.id,
+      service_id: svcForeign.id,
+      department_id: deptShev.id,
+      staff_id: null,
+      ticket_number: idx + 1,
+      prefix: 'ЗП',
+      status: 'waiting',
+      scheduled_date: today,
+      time_slot: null,
+      estimated_start_at: null,
+      estimated_end_at: null,
+      called_at: null,
+      serving_started_at: null,
+      completed_at: null,
+      cancelled_at: null,
+      is_missed_by_client: false,
+    });
+  });
+
+  // ─── Майбутні записи (наступні 7 днів — межа MAX_ADVANCE_BOOKING_DAYS у tickets.service.ts) ──
+  // Реалістичні «попередні записи» (waiting, time_slot заповнено) на кожен робочий день наперед,
+  // щоб календарі (персонал/громадянин/особистий розклад) мали що показати на 2 тижні вперед:
+  // дні 1-7 — заповнені бронюваннями (як і дозволяє система), дні 8-14 — навмисно порожні
+  // (це теж коректний тестовий стан: запис на такі дати неможливий, тож і талонів там немає).
+  const liveQueueHourFor = (dept: Department): number | null => {
+    const h = dept.live_queue_from ? parseInt(dept.live_queue_from.split(':')[0], 10) : NaN;
+    return isNaN(h) ? null : h;
+  };
+
+  const futureDates = Array.from({ length: 7 }, (_, i) => addDaysLocal(today, i + 1));
+
+  const futureCombos = [
+    { dept: deptShev, svc: svcPassport,  citizens: verified, fill: 0.5 },
+    { dept: deptShev, svc: svcForeign,   citizens: verified, fill: 0.4 },
+    { dept: deptShev, svc: svcResidence, citizens: all,      fill: 0.35 },
+    { dept: deptPech, svc: svcSocial,    citizens: all,      fill: 0.55 },
+    { dept: deptPech, svc: svcFop,       citizens: all,      fill: 0.4 },
+    { dept: deptPech, svc: svcLand,      citizens: all,      fill: 0.35 },
+  ];
+
+  let futureCount = 0;
+  for (const c of futureCombos) {
+    const capacity = windowCountFor(c.dept.id, c.svc.id);
+    const specs = generateFutureBookings(c.dept, c.svc, futureDates, capacity, c.citizens, c.fill, liveQueueHourFor(c.dept));
+    allSpecs.push(...specs);
+    futureCount += specs.length;
   }
+  console.log(`Future bookings generated: ${futureCount} (across ${futureDates.length} days, ${today} → ${futureDates[futureDates.length - 1]})`);
 
   const ticketRepo = ds.getRepository(Ticket);
   const savedTickets = await ticketRepo.save(allSpecs.map(s => ticketRepo.create(s)));

@@ -16,8 +16,4 @@ export class CreateVerificationDto {
   @IsString()
   document_number?: string;
 
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsString()
-  document_photo_url?: string;
 }

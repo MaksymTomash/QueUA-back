@@ -1,7 +1,14 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsBoolean, IsEnum, IsOptional, IsString, Matches } from 'class-validator';
+import { IsEmail, IsOptional, IsString, Matches } from 'class-validator';
 
-export class UpdateUserDto {
+export class IdentifyClientDto {
+  // Привʼязати до існуючого акаунта відвідувача
+  @ApiPropertyOptional({ description: 'Id існуючого акаунта відвідувача' })
+  @IsOptional()
+  @IsString()
+  client_id?: string;
+
+  // Або створити новий акаунт відвідувача (заповнюються дані з документів)
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
@@ -19,18 +26,13 @@ export class UpdateUserDto {
 
   @ApiPropertyOptional()
   @IsOptional()
-  @Matches(/^\+?[\d\s\-()]{7,20}$/)
-  phone?: string;
-
-  @ApiPropertyOptional({ enum: ['citizen', 'staff', 'admin'] })
-  @IsOptional()
-  @IsEnum(['citizen', 'staff', 'admin'])
-  role?: 'citizen' | 'staff' | 'admin';
+  @IsEmail()
+  email?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
-  @IsBoolean()
-  is_verified?: boolean;
+  @Matches(/^\+?[\d\s\-()]{7,20}$/)
+  phone?: string;
 
   @ApiPropertyOptional({ description: 'ІПН' })
   @IsOptional()

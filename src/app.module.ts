@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import databaseConfig from './config/database.config';
 import jwtConfig from './config/jwt.config';
+import firebaseConfig from './config/firebase.config';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { DepartmentsModule } from './departments/departments.module';
@@ -18,12 +19,13 @@ import { QueueModule } from './queue/queue.module';
 import { DepartmentServicesModule } from './department-services/department-services.module';
 import { StaffAssignmentsModule } from './staff-assignments/staff-assignments.module';
 import { DisciplineEventsModule } from './discipline-events/discipline-events.module';
+import { UploadsModule } from './uploads/uploads.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      load: [databaseConfig, jwtConfig],
+      load: [databaseConfig, jwtConfig, firebaseConfig],
     }),
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
@@ -44,6 +46,7 @@ import { DisciplineEventsModule } from './discipline-events/discipline-events.mo
     DepartmentServicesModule,
     StaffAssignmentsModule,
     DisciplineEventsModule,
+    UploadsModule,
   ],
 })
 export class AppModule {}

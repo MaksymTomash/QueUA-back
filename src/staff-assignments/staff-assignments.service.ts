@@ -46,7 +46,11 @@ export class StaffAssignmentsService {
   }
 
   async remove(departmentId: string, staffId: string) {
-    const assignment = await this.repo.findOneBy({ department_id: departmentId, staff_id: staffId });
+    await this.repo.delete({ department_id: departmentId, staff_id: staffId });
+  }
+
+  async removeOne(departmentId: string, staffId: string, serviceId: string) {
+    const assignment = await this.repo.findOneBy({ department_id: departmentId, staff_id: staffId, service_id: serviceId });
     if (!assignment) throw new NotFoundException('Призначення не знайдено');
     await this.repo.remove(assignment);
   }

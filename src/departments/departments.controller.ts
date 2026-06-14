@@ -19,6 +19,7 @@ import { QueryDepartmentsDto } from './dto/query-departments.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { DepartmentServicesService } from '../department-services/department-services.service';
 import { AddDepartmentServiceDto } from '../department-services/dto/add-department-service.dto';
 import { StaffAssignmentsService } from '../staff-assignments/staff-assignments.service';
@@ -55,13 +56,17 @@ export class DepartmentsController {
     return this.departmentsService.create(dto);
   }
 
-  @ApiOperation({ summary: 'Оновити відділення (admin)' })
+  @ApiOperation({ summary: 'Оновити відділення (admin — повністю; керівник — лише операційні поля)' })
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('admin')
+  @Roles('admin', 'staff')
   @Patch(':id')
-  update(@Param('id') id: string, @Body() dto: UpdateDepartmentDto) {
-    return this.departmentsService.update(id, dto);
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateDepartmentDto,
+    @CurrentUser() user: { sub: string; role: string },
+  ) {
+    return this.departmentsService.updateForUser(id, dto, user);
   }
 
   @ApiOperation({ summary: 'Видалити відділення (admin)' })
@@ -82,23 +87,33 @@ export class DepartmentsController {
     return this.deptServicesService.findByDepartment(id);
   }
 
-  @ApiOperation({ summary: 'Додати послугу до відділення (admin)' })
+  @ApiOperation({ summary: 'Додати послугу до відділення (admin, керівник відділення)' })
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('admin')
+  @Roles('admin', 'staff')
   @Post(':id/services')
   @HttpCode(HttpStatus.CREATED)
-  addService(@Param('id') id: string, @Body() dto: AddDepartmentServiceDto) {
+  async addService(
+    @Param('id') id: string,
+    @Body() dto: AddDepartmentServiceDto,
+    @CurrentUser() user: { sub: string; role: string },
+  ) {
+    await this.departmentsService.assertCanManage(id, user);
     return this.deptServicesService.add(id, dto);
   }
 
-  @ApiOperation({ summary: 'Прибрати послугу з відділення (admin)' })
+  @ApiOperation({ summary: 'Прибрати послугу з відділення (admin, керівник відділення)' })
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('admin')
+  @Roles('admin', 'staff')
   @Delete(':id/services/:serviceId')
   @HttpCode(HttpStatus.NO_CONTENT)
-  removeService(@Param('id') id: string, @Param('serviceId') serviceId: string) {
+  async removeService(
+    @Param('id') id: string,
+    @Param('serviceId') serviceId: string,
+    @CurrentUser() user: { sub: string; role: string },
+  ) {
+    await this.departmentsService.assertCanManage(id, user);
     return this.deptServicesService.remove(id, serviceId);
   }
 
@@ -113,23 +128,49 @@ export class DepartmentsController {
     return this.staffAssignments.findByDepartment(id);
   }
 
-  @ApiOperation({ summary: 'Призначити спеціаліста до відділення (admin)' })
+  @ApiOperation({ summary: 'Призначити спеціаліста до відділення (admin, керівник відділення)' })
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('admin')
+  @Roles('admin', 'staff')
   @Post(':id/staff')
   @HttpCode(HttpStatus.CREATED)
-  assignStaff(@Param('id') id: string, @Body() dto: AssignStaffDto) {
+  async assignStaff(
+    @Param('id') id: string,
+    @Body() dto: AssignStaffDto,
+    @CurrentUser() user: { sub: string; role: string },
+  ) {
+    await this.departmentsService.assertCanManage(id, user);
     return this.staffAssignments.assign(id, dto);
   }
 
-  @ApiOperation({ summary: 'Зняти спеціаліста з відділення (admin)' })
+  @ApiOperation({ summary: 'Зняти спеціаліста з відділення (admin, керівник відділення)' })
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('admin')
+  @Roles('admin', 'staff')
   @Delete(':id/staff/:staffId')
   @HttpCode(HttpStatus.NO_CONTENT)
-  removeStaff(@Param('id') id: string, @Param('staffId') staffId: string) {
+  async removeStaff(
+    @Param('id') id: string,
+    @Param('staffId') staffId: string,
+    @CurrentUser() user: { sub: string; role: string },
+  ) {
+    await this.departmentsService.assertCanManage(id, user);
     return this.staffAssignments.remove(id, staffId);
+  }
+
+  @ApiOperation({ summary: 'Зняти одну послугу у спеціаліста (admin, керівник відділення)' })
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin', 'staff')
+  @Delete(':id/staff/:staffId/services/:serviceId')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async removeStaffService(
+    @Param('id') id: string,
+    @Param('staffId') staffId: string,
+    @Param('serviceId') serviceId: string,
+    @CurrentUser() user: { sub: string; role: string },
+  ) {
+    await this.departmentsService.assertCanManage(id, user);
+    return this.staffAssignments.removeOne(id, staffId, serviceId);
   }
 }

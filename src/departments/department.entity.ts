@@ -31,6 +31,11 @@ export class Department {
   @Column({ type: 'jsonb', default: {} })
   working_hours: Record<string, string>;
 
+  // Час початку «живої черги» (формат "HH:00"). До цього часу — лише попередній запис.
+  // null = відділення працює лише за записом, без живої черги.
+  @Column({ type: 'varchar', nullable: true })
+  live_queue_from: string | null;
+
   @Column({ default: true })
   is_active: boolean;
 

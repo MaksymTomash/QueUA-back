@@ -37,8 +37,11 @@ export class Verification {
   @Column({ type: 'varchar', nullable: true })
   document_number: string | null;
 
+  @Column({ type: 'bytea', nullable: true, select: false })
+  document_photo: Buffer | null;
+
   @Column({ type: 'varchar', nullable: true })
-  document_photo_url: string | null;
+  document_photo_mime: string | null;
 
   @Column({ type: 'varchar', nullable: true })
   verified_by: string | null;
