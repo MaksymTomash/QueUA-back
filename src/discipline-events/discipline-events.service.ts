@@ -27,6 +27,16 @@ export class DisciplineEventsService {
     return this.repo.save(event);
   }
 
+  async sumAttendanceImpact(userId: string): Promise<number> {
+    const result = await this.repo
+      .createQueryBuilder('e')
+      .select('SUM(e.impact)', 'total')
+      .where('e.user_id = :userId', { userId })
+      .andWhere('e.event_type IN (:...types)', { types: ['completed_ticket', 'missed_ticket'] })
+      .getRawOne<{ total: string }>();
+    return parseFloat(result?.total ?? '0') || 0;
+  }
+
   findByUser(userId: string, page = 1, pageSize = 20) {
     return this.repo.find({
       where: { user_id: userId },

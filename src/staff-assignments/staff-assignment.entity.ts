@@ -38,6 +38,6 @@ export class StaffAssignment {
   @JoinColumn({ name: 'staff_id' })
   staff: User;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
 }

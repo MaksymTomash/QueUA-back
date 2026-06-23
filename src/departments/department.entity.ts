@@ -45,6 +45,6 @@ export class Department {
   @Column({ type: 'float', default: 0 })
   rating: number;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
 }

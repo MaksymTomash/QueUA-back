@@ -87,6 +87,8 @@ export class UsersService {
     if (user.is_verified) throw new ForbiddenException('Особу вже верифіковано — дані змінити неможливо');
     const dup = await this.userRepo.findOneBy({ tax_id: dto.tax_id });
     if (dup && dup.id !== userId) throw new ConflictException('Акаунт з таким ІПН вже існує');
+    const dupPassport = await this.userRepo.findOneBy({ passport_number: dto.passport_number });
+    if (dupPassport && dupPassport.id !== userId) throw new ConflictException('Акаунт з таким номером паспорта вже існує');
     await this.userRepo.update(userId, {
       tax_id: dto.tax_id,
       passport_number: dto.passport_number,

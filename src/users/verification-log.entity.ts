@@ -34,6 +34,6 @@ export class VerificationLog {
   @JoinColumn({ name: 'processed_by_id' })
   processed_by: User | null;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
 }

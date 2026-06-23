@@ -30,6 +30,6 @@ export class Rating {
   @Column({ type: 'text', nullable: true })
   comment: string | null;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
 }

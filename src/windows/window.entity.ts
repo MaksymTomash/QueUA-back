@@ -43,6 +43,6 @@ export class Window {
   @Column({ type: 'date' })
   date: string;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
 }

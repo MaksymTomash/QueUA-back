@@ -61,7 +61,7 @@ export class User {
   @Column({ type: 'varchar', nullable: true })
   document_photo_url: string | null;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
 
   @UpdateDateColumn()

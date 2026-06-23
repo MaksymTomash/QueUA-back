@@ -14,8 +14,6 @@ import { ClientRatingDto } from './dto/client-rating.dto';
 import { StaffRatingDto } from './dto/staff-rating.dto';
 import { DisciplineEventsService } from '../discipline-events/discipline-events.service';
 
-const DISCIPLINE_WINDOW = 20;
-
 @Injectable()
 export class RatingsService {
   constructor(
@@ -93,17 +91,32 @@ export class RatingsService {
 
     await this.updateDisciplineScore(ticket.client_id);
 
-    // impact: 1→-5, 2→-2.5, 3→0, 4→2.5, 5→5
-    const impact = (dto.score - 3) * 2.5;
     this.disciplineEvents.log({
       user_id: ticket.client_id,
       event_type: 'rating_received',
-      impact,
+      impact: Math.round(dto.score * 10),
       ticket_id: ticket.id,
       rating_id: saved.id,
     });
 
     return saved;
+  }
+
+  private async updateDisciplineScore(citizenId: string) {
+    const lastRatings = await this.repo.find({
+      where: { citizen_id: citizenId, type: 'staff' },
+      order: { created_at: 'DESC' },
+      take: 20,
+    });
+    if (!lastRatings.length) return;
+
+    const avg = lastRatings.reduce((sum, r) => sum + r.score, 0) / lastRatings.length;
+    const rating_component = Math.round(avg * 10); // avg 5 → 50, avg 3 → 30
+
+    const attendance_delta = await this.disciplineEvents.sumAttendanceImpact(citizenId);
+
+    const discipline_score = Math.max(0, Math.min(100, rating_component + attendance_delta));
+    await this.userRepo.update(citizenId, { discipline_score });
   }
 
   // ─── Агрегат по спеціалісту ───────────────────────────────────────────────
@@ -160,21 +173,6 @@ export class RatingsService {
   }
 
   // ─── Хелпери ─────────────────────────────────────────────────────────────
-
-  private async updateDisciplineScore(citizenId: string) {
-    const lastRatings = await this.repo.find({
-      where: { citizen_id: citizenId, type: 'staff' },
-      order: { created_at: 'DESC' },
-      take: DISCIPLINE_WINDOW,
-    });
-
-    if (!lastRatings.length) return;
-
-    const avg = lastRatings.reduce((sum, r) => sum + r.score, 0) / lastRatings.length;
-    const discipline_score = Math.round(avg * 20); // 1–5 → 20–100
-
-    await this.userRepo.update(citizenId, { discipline_score });
-  }
 
   private async updateDepartmentRating(departmentId: string) {
     const result = await this.repo

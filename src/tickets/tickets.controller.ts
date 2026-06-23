@@ -64,6 +64,16 @@ export class TicketsController {
     return this.ticketsService.getMy(clientId, +page, +pageSize);
   }
 
+  @ApiOperation({ summary: 'Інфо про живу чергу (citizen/staff)' })
+  @Roles('citizen', 'staff', 'admin')
+  @Get('queue-info')
+  getQueueInfo(
+    @Query('department_id') departmentId: string,
+    @Query('service_id') serviceId: string,
+  ) {
+    return this.ticketsService.getQueueInfo(departmentId, serviceId);
+  }
+
   @ApiOperation({ summary: 'Скасувати талон (citizen)' })
   @Roles('citizen')
   @Post(':id/cancel')

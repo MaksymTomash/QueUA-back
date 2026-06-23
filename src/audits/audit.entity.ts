@@ -41,6 +41,6 @@ export class TicketAudit {
   @Column({ type: 'integer', nullable: true })
   duration_seconds: number | null;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
 }

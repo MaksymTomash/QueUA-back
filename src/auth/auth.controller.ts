@@ -12,6 +12,7 @@ import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { RefreshDto } from './dto/refresh.dto';
 import { GoogleAuthDto } from './dto/google-auth.dto';
+import { FirebaseAuthDto } from './dto/firebase-auth.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 
@@ -39,6 +40,13 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   refresh(@Body() dto: RefreshDto) {
     return this.authService.refresh(dto.refresh_token);
+  }
+
+  @ApiOperation({ summary: 'Вхід через Firebase (email або Google)' })
+  @Post('firebase')
+  @HttpCode(HttpStatus.OK)
+  firebaseLogin(@Body() dto: FirebaseAuthDto) {
+    return this.authService.firebaseLogin(dto);
   }
 
   @ApiOperation({ summary: 'Вхід через Google (Firebase ID Token)' })

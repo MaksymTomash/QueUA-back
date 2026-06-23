@@ -52,6 +52,6 @@ export class Verification {
   @Column({ type: 'varchar', nullable: true })
   rejection_reason: string | null;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
 }

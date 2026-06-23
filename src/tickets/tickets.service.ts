@@ -7,7 +7,7 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, IsNull, Not, Repository } from 'typeorm';
+import { DataSource, In, IsNull, Not, Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import { randomBytes } from 'crypto';
 import { Ticket } from './ticket.entity';
@@ -140,18 +140,6 @@ export class TicketsService {
     const hours = this.parseWorkingHours(dept, scheduledDate);
     if (!hours) throw new BadRequestException(`${dept.name} не працює у цей день`);
 
-    // Для сьогодні — перевіряємо відкриті вікна
-    if (scheduledDate === today) {
-      const hasOpenWindow = await this.windowRepo
-        .createQueryBuilder('w')
-        .where('w.department_id = :dep', { dep: dto.department_id })
-        .andWhere('w.service_id = :svc', { svc: dto.service_id })
-        .andWhere('w.status != :closed', { closed: 'closed' })
-        .getExists();
-
-      if (!hasOpenWindow) throw new NotFoundException('Немає активних вікон для цієї послуги сьогодні');
-    }
-
     const liveQueueFromHour = this.parseLiveQueueHour(dept);
     const isWalkInRequest = !dto.scheduled_date && !dto.time_slot;
     const currentHour = new Date().getHours();
@@ -166,15 +154,11 @@ export class TicketsService {
       if (currentHour < liveQueueFromHour)
         throw new BadRequestException(`Жива черга у ${dept.name} починається о ${dept.live_queue_from}`);
 
-      // Максимум живочергових талонів на день обчислюється автоматично:
-      // (час до закриття від початку живої черги) / (тривалість обслуговування) × відкриті вікна
-      const maxLiveQueueTickets = await this.calcLiveQueueCapacity(
-        dto.department_id,
-        dto.service_id,
-        svc,
-        liveQueueFromHour,
-        hours.closeHour,
-      );
+      // Кількість відкритих вікон для паралельного обслуговування
+      const windowCount = await this.windowRepo.count({
+        where: { department_id: dto.department_id, service_id: dto.service_id, status: Not('closed') },
+      });
+      const effectiveWindows = Math.max(1, windowCount);
 
       const ticketNumber = await this.dataSource.transaction(async (manager) => {
         // Блокуємо рядок лічильника як м'ютекс для атомарної видачі номера
@@ -191,21 +175,34 @@ export class TicketsService {
           await manager.save(QueueCounter, counter);
         }
 
-        const issuedToday = await manager.count(Ticket, {
-          where: {
-            department_id: dto.department_id,
-            service_id: dto.service_id,
-            scheduled_date: today,
-            time_slot: IsNull(),
-          },
+        // Перевірка залишкового часу: чи встигне відділення обслужити всіх + цього клієнта до закриття
+        const activeNow = await manager.count(Ticket, {
+          where: [
+            { department_id: dto.department_id, service_id: dto.service_id, scheduled_date: today, time_slot: IsNull(), status: 'waiting' },
+            { department_id: dto.department_id, service_id: dto.service_id, scheduled_date: today, time_slot: IsNull(), status: 'called' },
+            { department_id: dto.department_id, service_id: dto.service_id, scheduled_date: today, time_slot: IsNull(), status: 'serving' },
+          ],
         });
 
-        if (issuedToday >= maxLiveQueueTickets)
+        const nowMinutes = new Date().getHours() * 60 + new Date().getMinutes();
+        const remainingMinutes = hours.closeHour * 60 - nowMinutes;
+        const timeNeeded = Math.ceil((activeNow + 1) / effectiveWindows) * svc.estimated_duration_minutes;
+
+        if (timeNeeded > remainingMinutes)
           throw new BadRequestException(
-            `Ліміт живої черги на сьогодні вичерпано (${maxLiveQueueTickets} талонів) — оберіть попередній запис`,
+            `Відділення не встигне вас обслужити до закриття (${String(hours.closeHour).padStart(2, '0')}:00). В черзі: ${activeNow} ос.`,
           );
 
-        return issuedToday + 1;
+        const maxRow = await manager
+          .createQueryBuilder(Ticket, 't')
+          .select('MAX(t.ticket_number)', 'max')
+          .where('t.department_id = :deptId', { deptId: dto.department_id })
+          .andWhere('t.service_id = :svcId', { svcId: dto.service_id })
+          .andWhere('t.scheduled_date = :date', { date: today })
+          .andWhere('t.time_slot IS NULL')
+          .getRawOne<{ max: number | null }>();
+
+        return (maxRow?.max ?? 0) + 1;
       });
 
       const ticket = this.repo.create({
@@ -339,16 +336,16 @@ export class TicketsService {
         await manager.save(QueueCounter, counter);
       }
 
-      const issuedToday = await manager.count(Ticket, {
-        where: {
-          department_id: window.department_id,
-          service_id: dto.service_id,
-          scheduled_date: today,
-          time_slot: IsNull(),
-        },
-      });
+      const maxRow = await manager
+        .createQueryBuilder(Ticket, 't')
+        .select('MAX(t.ticket_number)', 'max')
+        .where('t.department_id = :deptId', { deptId: window.department_id })
+        .andWhere('t.service_id = :svcId', { svcId: dto.service_id })
+        .andWhere('t.scheduled_date = :date', { date: today })
+        .andWhere('t.time_slot IS NULL')
+        .getRawOne<{ max: number | null }>();
 
-      return issuedToday + 1;
+      return (maxRow?.max ?? 0) + 1;
     });
 
     const ticket = this.repo.create({
@@ -424,6 +421,48 @@ export class TicketsService {
     return saved;
   }
 
+  // ─── Інфо про живу чергу (публічний) ────────────────────────────────────
+
+  async getQueueInfo(departmentId: string, serviceId: string) {
+    const dept = await this.deptRepo.findOneBy({ id: departmentId });
+    const svc  = await this.serviceRepo.findOneBy({ id: serviceId });
+    if (!dept || !svc) return { live_queue_from: null, current_waiting: 0, estimated_wait_minutes: null, can_join: false };
+
+    const today = new Date().toISOString().split('T')[0];
+    const hours = this.parseWorkingHours(dept, today);
+    const liveQueueFromHour = this.parseLiveQueueHour(dept);
+
+    if (!hours || liveQueueFromHour === null)
+      return { live_queue_from: dept.live_queue_from, current_waiting: 0, estimated_wait_minutes: null, can_join: false };
+
+    const nowMinutes      = new Date().getHours() * 60 + new Date().getMinutes();
+    const remainingMinutes = hours.closeHour * 60 - nowMinutes;
+    const isLivePhase     = new Date().getHours() >= liveQueueFromHour;
+
+    const windowCount = await this.windowRepo.count({
+      where: { department_id: departmentId, service_id: serviceId, status: Not('closed') },
+    });
+    const effectiveWindows = Math.max(1, windowCount);
+
+    const activeNow = await this.repo.count({
+      where: [
+        { department_id: departmentId, service_id: serviceId, scheduled_date: today, time_slot: IsNull(), status: 'waiting' },
+        { department_id: departmentId, service_id: serviceId, scheduled_date: today, time_slot: IsNull(), status: 'called' },
+        { department_id: departmentId, service_id: serviceId, scheduled_date: today, time_slot: IsNull(), status: 'serving' },
+      ],
+    });
+
+    const estimated_wait_minutes = Math.ceil((activeNow + 1) / effectiveWindows) * svc.estimated_duration_minutes;
+    const can_join = isLivePhase && estimated_wait_minutes <= remainingMinutes;
+
+    return {
+      live_queue_from: dept.live_queue_from,
+      current_waiting: activeNow,
+      estimated_wait_minutes,
+      can_join,
+    };
+  }
+
   // ─── Читання ──────────────────────────────────────────────────────────────
 
   async getActive(clientId: string) {
@@ -431,36 +470,141 @@ export class TicketsService {
       .createQueryBuilder('t')
       .where('t.client_id = :clientId', { clientId })
       .andWhere('t.status IN (:...statuses)', { statuses: ['waiting', 'called', 'serving'] })
+      .orderBy('t.issued_at', 'DESC')
       .getOne();
 
     if (!ticket) return null;
+
+    const [svc, dept] = await Promise.all([
+      this.serviceRepo.findOneBy({ id: ticket.service_id }),
+      this.deptRepo.findOneBy({ id: ticket.department_id }),
+    ]);
 
     const position =
       ticket.status === 'waiting'
         ? await this.countAheadInSlot(ticket)
         : 0;
 
-    return { ...ticket, position };
+    const estimated_start_at =
+      ticket.status === 'waiting' && !ticket.time_slot && svc
+        ? new Date(Date.now() + position * svc.estimated_duration_minutes * 60000).toISOString()
+        : ticket.estimated_start_at?.toISOString() ?? null;
+
+    return {
+      id: ticket.id,
+      window_id: ticket.window_id,
+      client_id: ticket.client_id,
+      staff_id: ticket.staff_id,
+      service_id: ticket.service_id,
+      department_id: ticket.department_id,
+      ticket_number: ticket.ticket_number,
+      prefix: ticket.prefix,
+      status: ticket.status,
+      is_missed_by_client: ticket.is_missed_by_client,
+      issued_at: ticket.issued_at,
+      called_at: ticket.called_at,
+      estimated_start_at,
+      estimated_end_at: ticket.estimated_end_at,
+      serving_started_at: ticket.serving_started_at,
+      completed_at: ticket.completed_at,
+      cancelled_at: ticket.cancelled_at,
+      scheduled_date: ticket.scheduled_date,
+      time_slot: ticket.time_slot,
+      rating_by_client_id: ticket.rating_by_client_id,
+      rating_by_staff_id: ticket.rating_by_staff_id,
+      client_rating: ticket.client_rating,
+      service_name: svc?.name ?? null,
+      service_duration_minutes: svc?.estimated_duration_minutes ?? null,
+      department_name: dept?.name ?? null,
+      department_address: dept?.address ?? null,
+      department_city: dept?.city ?? null,
+      position,
+    };
   }
 
   async getMy(clientId: string, page: number, pageSize: number) {
-    return this.repo.find({
-      where: { client_id: clientId },
-      order: { issued_at: 'DESC' },
-      skip: (page - 1) * pageSize,
-      take: pageSize,
-    });
+    const tickets = await this.repo
+      .createQueryBuilder('t')
+      .where('t.client_id = :clientId', { clientId })
+      .orderBy('t.issued_at', 'DESC')
+      .skip((page - 1) * pageSize)
+      .take(pageSize)
+      .getMany();
+
+    // Batch-load services and departments to avoid N+1
+    const svcIds = [...new Set(tickets.map((t) => t.service_id).filter(Boolean))];
+    const deptIds = [...new Set(tickets.map((t) => t.department_id).filter(Boolean))];
+    const [svcs, depts] = await Promise.all([
+      svcIds.length ? this.serviceRepo.findBy({ id: In(svcIds) }) : Promise.resolve([]),
+      deptIds.length ? this.deptRepo.findBy({ id: In(deptIds) }) : Promise.resolve([]),
+    ]);
+    const svcMap = new Map(svcs.map((s) => [s.id, s]));
+    const deptMap = new Map(depts.map((d) => [d.id, d]));
+
+    return Promise.all(tickets.map(async (t) => {
+      const svc = svcMap.get(t.service_id) ?? null;
+      const dept = deptMap.get(t.department_id) ?? null;
+      let position: number | null = null;
+      let estimated_start_at: string | null = t.estimated_start_at?.toISOString() ?? null;
+
+      if (t.status === 'waiting') {
+        position = await this.countAheadInSlot(t);
+        if (!t.time_slot && svc) {
+          estimated_start_at = new Date(
+            Date.now() + position * svc.estimated_duration_minutes * 60000,
+          ).toISOString();
+        }
+      }
+
+      return {
+        id: t.id,
+        window_id: t.window_id,
+        client_id: t.client_id,
+        staff_id: t.staff_id,
+        service_id: t.service_id,
+        department_id: t.department_id,
+        ticket_number: t.ticket_number,
+        prefix: t.prefix,
+        status: t.status,
+        is_missed_by_client: t.is_missed_by_client,
+        issued_at: t.issued_at,
+        called_at: t.called_at,
+        estimated_start_at,
+        estimated_end_at: t.estimated_end_at,
+        serving_started_at: t.serving_started_at,
+        completed_at: t.completed_at,
+        cancelled_at: t.cancelled_at,
+        scheduled_date: t.scheduled_date,
+        time_slot: t.time_slot,
+        rating_by_client_id: t.rating_by_client_id,
+        rating_by_staff_id: t.rating_by_staff_id,
+        client_rating: t.client_rating,
+        client_comment: t.client_comment,
+        client_rating_topic: t.client_rating_topic,
+        staff_rating: t.staff_rating,
+        staff_rating_topic: t.staff_rating_topic,
+        staff_rating_comment: t.staff_rating_comment,
+        service_name: svc?.name ?? null,
+        service_duration_minutes: svc?.estimated_duration_minutes ?? null,
+        department_name: dept?.name ?? null,
+        department_address: dept?.address ?? null,
+        department_city: dept?.city ?? null,
+        position,
+      };
+    }));
   }
 
   async findOne(id: string, requesterId: string, requesterRole: string) {
-    const ticket = await this.repo.findOne({
-      where: { id },
-      relations: { service: true, department: true },
-    });
+    const ticket = await this.repo.findOneBy({ id });
     if (!ticket) throw new NotFoundException('Талон не знайдено');
 
     if (requesterRole === 'citizen' && ticket.client_id !== requesterId)
       throw new ForbiddenException('Доступ заборонено');
+
+    const [svc, dept] = await Promise.all([
+      this.serviceRepo.findOneBy({ id: ticket.service_id }),
+      this.deptRepo.findOneBy({ id: ticket.department_id }),
+    ]);
 
     const position =
       ticket.status === 'waiting' ? await this.countAheadInSlot(ticket) : 0;
@@ -477,7 +621,43 @@ export class TicketsService {
       if (u) staff = { id: u.id, first_name: u.first_name, last_name: u.last_name, email: u.email };
     }
 
-    return { ...ticket, position, client, staff };
+    return {
+      id: ticket.id,
+      window_id: ticket.window_id,
+      client_id: ticket.client_id,
+      staff_id: ticket.staff_id,
+      service_id: ticket.service_id,
+      department_id: ticket.department_id,
+      ticket_number: ticket.ticket_number,
+      prefix: ticket.prefix,
+      status: ticket.status,
+      is_missed_by_client: ticket.is_missed_by_client,
+      issued_at: ticket.issued_at,
+      called_at: ticket.called_at,
+      estimated_start_at: ticket.estimated_start_at,
+      estimated_end_at: ticket.estimated_end_at,
+      serving_started_at: ticket.serving_started_at,
+      completed_at: ticket.completed_at,
+      cancelled_at: ticket.cancelled_at,
+      scheduled_date: ticket.scheduled_date,
+      time_slot: ticket.time_slot,
+      rating_by_client_id: ticket.rating_by_client_id,
+      rating_by_staff_id: ticket.rating_by_staff_id,
+      client_rating: ticket.client_rating,
+      client_comment: ticket.client_comment,
+      client_rating_topic: ticket.client_rating_topic,
+      staff_rating: ticket.staff_rating,
+      staff_rating_topic: ticket.staff_rating_topic,
+      staff_rating_comment: ticket.staff_rating_comment,
+      service_name: svc?.name ?? null,
+      service_duration_minutes: svc?.estimated_duration_minutes ?? null,
+      department_name: dept?.name ?? null,
+      department_address: dept?.address ?? null,
+      department_city: dept?.city ?? null,
+      position,
+      client,
+      staff,
+    };
   }
 
   async findAll(query: QueryTicketsDto) {
@@ -657,12 +837,20 @@ export class TicketsService {
     if (saved.window_id) await this.resetWindowDisplay(saved.window_id);
 
     if (saved.client_id) {
+      const streak = await this.getConsecutiveStatusCount(saved.client_id, 'completed');
+      const bonus = 2 + streak; // 1-а явка → +3, 2-га → +4, 3-тя → +5 ...
       this.disciplineEvents.log({
         user_id: saved.client_id,
         event_type: 'completed_ticket',
-        impact: 2,
+        impact: bonus,
         ticket_id: saved.id,
       });
+      await this.userRepo
+        .createQueryBuilder()
+        .update(User)
+        .set({ discipline_score: () => `LEAST("discipline_score" + ${bonus}, 100)` })
+        .where('id = :id', { id: saved.client_id })
+        .execute();
       await this.updateAttendanceAndStreak(saved.client_id);
     }
 
@@ -687,12 +875,20 @@ export class TicketsService {
     if (saved.window_id) await this.resetWindowDisplay(saved.window_id);
 
     if (saved.client_id) {
+      const streak = await this.getConsecutiveStatusCount(saved.client_id, 'missed');
+      const penalty = 5 + streak * 5; // 1-а неявка → −10, 2-га → −15, 3-тя → −20 ...
       this.disciplineEvents.log({
         user_id: saved.client_id,
         event_type: 'missed_ticket',
-        impact: -5,
+        impact: -penalty,
         ticket_id: saved.id,
       });
+      await this.userRepo
+        .createQueryBuilder()
+        .update(User)
+        .set({ discipline_score: () => `GREATEST("discipline_score" - ${penalty}, 0)` })
+        .where('id = :id', { id: saved.client_id })
+        .execute();
       await this.updateAttendanceAndStreak(saved.client_id);
     }
 
@@ -790,21 +986,6 @@ export class TicketsService {
     return Math.max(1, windowCount);
   }
 
-  // Максимум живочергових талонів на день = (тривалість фази живої черги / тривалість обслуговування) × відкриті вікна
-  private async calcLiveQueueCapacity(
-    departmentId: string,
-    serviceId: string,
-    svc: QueueService,
-    liveQueueFromHour: number,
-    closeHour: number,
-  ): Promise<number> {
-    const windowCount = await this.windowRepo.count({
-      where: { department_id: departmentId, service_id: serviceId, status: Not('closed') },
-    });
-    const liveQueueMinutes = Math.max(0, (closeHour - liveQueueFromHour) * 60);
-    return Math.max(1, Math.max(1, windowCount) * Math.floor(liveQueueMinutes / svc.estimated_duration_minutes));
-  }
-
   // Скільки талонів з меншим номером чекають у тому самому пулі (живочергові — окремо від записаних,
   // записані — лише в межах свого слоту), щоб позиція не змішувала два різні пули
   private async countAheadInSlot(ticket: Ticket): Promise<number> {
@@ -843,6 +1024,24 @@ export class TicketsService {
     if (!win) return;
     const waiting_count = await this.countWaitingForWindow(win);
     this.queueGateway.emitWindowUpdated(win.department_id, { ...win, waiting_count });
+  }
+
+  private async getConsecutiveStatusCount(clientId: string, targetStatus: 'completed' | 'missed'): Promise<number> {
+    const rows = await this.repo
+      .createQueryBuilder('t')
+      .select('t.status', 'status')
+      .where('t.client_id = :clientId', { clientId })
+      .andWhere('t.status IN (:...statuses)', { statuses: ['completed', 'missed'] })
+      .orderBy('t.issued_at', 'DESC')
+      .limit(20)
+      .getRawMany<{ status: string }>();
+
+    let count = 0;
+    for (const row of rows) {
+      if (row.status === targetStatus) count++;
+      else break;
+    }
+    return Math.max(1, count);
   }
 
   private async requireStatus(ticketId: string, expected: string) {

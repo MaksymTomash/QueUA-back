@@ -29,6 +29,6 @@ export class DisciplineEvent {
   @Column({ type: 'varchar', nullable: true })
   rating_id: string | null;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
 }

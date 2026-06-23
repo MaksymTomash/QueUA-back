@@ -72,7 +72,7 @@ export class Ticket {
   @Column({ default: false })
   is_missed_by_client: boolean;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   issued_at: Date;
 
   @Column({ type: 'timestamptz', nullable: true })

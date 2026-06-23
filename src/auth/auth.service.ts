@@ -1,5 +1,6 @@
 import {
   ConflictException,
+  Inject,
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -9,11 +10,13 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
 import * as admin from 'firebase-admin';
+import { OAuth2Client } from 'google-auth-library';
 import { randomUUID } from 'crypto';
 import { User } from '../users/user.entity';
 import { RefreshToken } from './refresh-token.entity';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
+import { FirebaseAuthDto } from './dto/firebase-auth.dto';
 
 @Injectable()
 export class AuthService {
@@ -24,6 +27,8 @@ export class AuthService {
     private readonly refreshTokenRepo: Repository<RefreshToken>,
     private readonly jwtService: JwtService,
     private readonly config: ConfigService,
+    @Inject('FIREBASE_ADMIN')
+    private readonly firebaseAdmin: typeof admin,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -81,15 +86,70 @@ export class AuthService {
     return this.issueTokens(user);
   }
 
-  async googleLogin(idToken: string) {
-    let firebaseUser: admin.auth.DecodedIdToken;
+  async firebaseLogin(dto: FirebaseAuthDto) {
+    let decoded: admin.auth.DecodedIdToken;
     try {
-      firebaseUser = await admin.auth().verifyIdToken(idToken);
+      decoded = await this.firebaseAdmin.auth().verifyIdToken(dto.id_token);
     } catch {
       throw new UnauthorizedException('Недійсний Firebase ID Token');
     }
 
-    const { email, name, picture } = firebaseUser;
+    if (!decoded.email_verified) {
+      throw new UnauthorizedException('Email не підтверджено. Перевірте вашу пошту і перейдіть за посиланням у листі.');
+    }
+
+    const email = decoded.email!;
+    let user = await this.userRepo.findOneBy({ email });
+
+    if (!user) {
+      const nameParts = (decoded.name ?? '').split(' ');
+      user = this.userRepo.create({
+        email,
+        password_hash: '',
+        first_name: dto.first_name ?? nameParts[0] ?? email.split('@')[0],
+        last_name:  dto.last_name  ?? nameParts[1] ?? '',
+        middle_name: dto.middle_name ?? null,
+        phone: dto.phone ?? null,
+        avatar_url: decoded.picture ?? null,
+      });
+      await this.userRepo.save(user);
+    } else {
+      const updates: Partial<User> = {};
+      if (!user.first_name && dto.first_name)   updates.first_name  = dto.first_name;
+      if (!user.last_name  && dto.last_name)    updates.last_name   = dto.last_name;
+      if (!user.middle_name && dto.middle_name) updates.middle_name = dto.middle_name;
+      if (!user.phone && dto.phone)             updates.phone       = dto.phone;
+      if (!user.avatar_url && decoded.picture)  updates.avatar_url  = decoded.picture;
+      if (Object.keys(updates).length > 0) {
+        await this.userRepo.update(user.id, updates);
+        Object.assign(user, updates);
+      }
+    }
+
+    return this.issueTokens(user);
+  }
+
+  async googleLogin(idToken: string) {
+    const clientId = this.config.get<string>('google.clientId');
+    const oauthClient = new OAuth2Client(clientId);
+
+    let email: string | undefined;
+    let name: string | undefined;
+    let picture: string | undefined;
+
+    try {
+      const ticket = await oauthClient.verifyIdToken({
+        idToken,
+        audience: clientId,
+      });
+      const payload = ticket.getPayload();
+      email   = payload?.email;
+      name    = payload?.name;
+      picture = payload?.picture;
+    } catch {
+      throw new UnauthorizedException('Недійсний Google ID Token');
+    }
+
     if (!email) throw new UnauthorizedException('Google акаунт не має email');
 
     let user = await this.userRepo.findOneBy({ email });
